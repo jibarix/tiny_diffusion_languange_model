@@ -1,0 +1,84 @@
+cache_dir: cache
+curriculum:
+  centrality_weight: 0.4
+  easy_threshold: 33.0
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  hard_threshold: 67.0
+  lexical_weight: 0.3
+  n_clusters: 8
+  reset_optimizer: true
+  stages:
+  - data_selection: easy
+    epochs: 50
+    format_type: sentences
+    masking_rate_range:
+    - 0.75
+    - 0.9
+    name: foundation
+  - data_selection: medium
+    epochs: 100
+    format_type: pairs
+    masking_rate_range:
+    - 0.4
+    - 0.6
+    name: structural
+  - data_selection: all
+    epochs: 150
+    format_type: paragraphs
+    masking_rate_range:
+    - 0.1
+    - 0.3
+    name: refinement
+  syntactic_weight: 0.3
+  transition_epochs: 5
+data_dir: data
+device: cuda
+experiment_name: darwin-diffusion
+gradient_checkpointing: true
+mixed_precision: true
+model:
+  activation: swiglu
+  attention_dropout: 0.1
+  d_ff: 2048
+  d_model: 768
+  dropout: 0.1
+  init_std: 0.02
+  mask_token_id: 0
+  max_seq_len: 512
+  n_heads: 12
+  n_layers: 12
+  norm_eps: 1.0e-06
+  norm_type: rmsnorm
+  pos_encoding: rope
+  use_bias: false
+  vocab_size: 25000
+output_dir: outputs
+seed: 42
+training:
+  batch_size: 32
+  beta1: 0.9
+  beta2: 0.95
+  dataloader_num_workers: 4
+  dropout_schedule: constant
+  eps: 1.0e-08
+  eval_every: 1000
+  grad_clip_norm: 1.0
+  gradient_accumulation_steps: 2
+  label_smoothing: 0.0
+  learning_rate: 0.0002
+  log_every: 100
+  max_epochs: 300
+  max_grad_norm: 1.0
+  max_steps: null
+  min_delta: 0.0001
+  min_learning_rate: 2.0e-05
+  patience: 10
+  pin_memory: true
+  save_every: 5000
+  scheduler: cosine_with_restarts
+  use_gradient_checkpointing: true
+  use_mixed_precision: true
+  val_batch_size: null
+  val_split: 0.1
+  warmup_steps: 1000
+  weight_decay: 0.1
