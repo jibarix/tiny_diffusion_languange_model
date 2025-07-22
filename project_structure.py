@@ -83,7 +83,7 @@ def create_project_structure():
                         print(f"Created: {file_path}")
     
     # Create project root
-    project_root = Path("tiny-diffusion-darwin")
+    project_root = Path("tiny-diffusion")
     project_root.mkdir(exist_ok=True)
     print(f"Created: {project_root}")
     

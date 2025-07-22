@@ -31,7 +31,7 @@ class ProjectConfig:
     gradient_checkpointing: bool = True
     
     # Experiment settings
-    experiment_name: str = "darwin-diffusion"
+    experiment_name: str = "micro-diffusion"
     seed: int = 42
     
     @classmethod
@@ -57,7 +57,7 @@ class ProjectConfig:
     
     @classmethod
     def default(cls) -> 'ProjectConfig':
-        """Create default configuration for the Darwin project"""
+        """Create default configuration for the Micro Diffusion project"""
         return cls(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.default(),

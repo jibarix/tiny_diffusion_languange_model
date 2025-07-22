@@ -51,7 +51,7 @@ class CurriculumConfig:
     
     @classmethod
     def three_stage(cls) -> 'CurriculumConfig':
-        """Default three-stage curriculum for Darwin project"""
+        """Default three-stage curriculum for Micro Diffusion project"""
         stages = [
             StageConfig(
                 name="foundation",

@@ -33,7 +33,7 @@ curriculum:
   transition_epochs: 5
 data_dir: data
 device: cuda
-experiment_name: darwin-diffusion
+experiment_name: micro-diffusion
 gradient_checkpointing: true
 mixed_precision: true
 model:

@@ -24,7 +24,7 @@ RAM: 64GB DDR5-4800
 - **Layers**: 12 (following "deeper not wider" principle for tiny models)
 - **Hidden Size**: 768
 - **Attention Heads**: 12
-- **Vocab Size**: ~25k tokens (compressed from 50k GPT-2 vocab using Darwin corpus frequency analysis)
+- **Vocab Size**: ~25k tokens (compressed from 50k GPT-2 vocab using single book corpus frequency analysis)
 - **Sequence Length**: 512 tokens
 - **Positional Encoding**: RoPE (Rotary Position Embeddings)
 
@@ -137,7 +137,7 @@ Based on research, expect:
 ## File Structure
 
 ```
-tiny-diffusion-darwin/
+tiny-diffusion/
 ├── README.md
 ├── requirements.txt
 ├── config/
@@ -438,7 +438,7 @@ Generate text and analyze results
 ## Success Metrics
 
 1. **Technical Success**: Model converges and generates coherent text
-2. **Style Success**: Generated text recognizably "Darwin-esque"
+2. **Style Success**: Generated text recognizably based on single book training
 3. **Educational Success**: Deep understanding of curriculum learning and diffusion models
 4. **Fun Success**: Enjoy the process and share interesting results
 
