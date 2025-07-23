@@ -107,6 +107,40 @@ class ProjectConfig:
             'seed': self.seed
         }
 
+    def validate(self):
+        """Validate all configuration components"""
+        # Validate curriculum configuration
+        self.curriculum.validate()
+        
+        # Validate model configuration
+        assert self.model.d_model > 0, "Model dimension must be positive"
+        assert self.model.n_layers > 0, "Number of layers must be positive"
+        assert self.model.n_heads > 0, "Number of heads must be positive"
+        assert self.model.d_ff > 0, "Feed-forward dimension must be positive"
+        assert self.model.max_seq_len > 0, "Max sequence length must be positive"
+        assert 0 <= self.model.dropout <= 1, "Dropout must be between 0 and 1"
+        assert 0 <= self.model.attention_dropout <= 1, "Attention dropout must be between 0 and 1"
+        
+        # Validate training configuration
+        assert self.training.batch_size > 0, "Batch size must be positive"
+        assert self.training.learning_rate > 0, "Learning rate must be positive"
+        assert self.training.weight_decay >= 0, "Weight decay must be non-negative"
+        assert self.training.warmup_steps >= 0, "Warmup steps must be non-negative"
+        assert self.training.max_grad_norm > 0, "Max gradient norm must be positive"
+        
+        # Validate path configurations
+        assert isinstance(self.data_dir, str), "Data directory must be a string"
+        assert isinstance(self.output_dir, str), "Output directory must be a string"
+        assert isinstance(self.cache_dir, str), "Cache directory must be a string"
+        
+        # Validate device configuration
+        assert self.device in ["cuda", "cpu", "auto"], f"Invalid device: {self.device}"
+        
+        # Validate experiment settings
+        assert isinstance(self.experiment_name, str), "Experiment name must be a string"
+        assert isinstance(self.seed, int) and self.seed >= 0, "Seed must be a non-negative integer"
+        
+        return True
 
 # Convenience functions
 def get_default_config() -> ProjectConfig:

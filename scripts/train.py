@@ -61,8 +61,30 @@ def load_data(data_dir: str, val_split: float = 0.1):
     with open(data_path / "curriculum_splits.pkl", "rb") as f:
         curriculum_splits = pickle.load(f)
     
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(data_path / "tokenizer")
+    # Load tokenizer - handle vocabulary curriculum
+    tokenizer = None
+    
+    # Try to load tokenizer_level_1 (smallest vocabulary)
+    tokenizer_level_1_path = data_path / "tokenizer_level_1"
+    if tokenizer_level_1_path.exists():
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_level_1_path)
+        print(f"✅ Using vocabulary curriculum tokenizer (level 1)")
+    else:
+        # Fallback to standard tokenizer
+        tokenizer_path = data_path / "tokenizer"
+        if tokenizer_path.exists():
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+            print(f"✅ Using standard tokenizer")
+        else:
+            # Create default tokenizer
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
+                            "bos_token": "<bos>", "eos_token": "<eos>"}
+            tokens_to_add = {k: v for k, v in special_tokens.items() 
+                           if getattr(tokenizer, k) is None}
+            if tokens_to_add:
+                tokenizer.add_special_tokens(tokens_to_add)
+            print(f"✅ Using default GPT-2 tokenizer with special tokens")
     
     # Create validation split from all data
     all_segments = curriculum_splits.get('stage_1', []) + curriculum_splits.get('stage_2', []) + curriculum_splits.get('stage_3', [])
