@@ -50,7 +50,7 @@ def create_model(config: ProjectConfig, tokenizer) -> MaskedDiffusionLM:
         # Use the tokenizer size (what actually exists)
         actual_vocab_size = tokenizer_vocab_size
         print(f"   Using tokenizer size: {actual_vocab_size:,}")
-        print(f"   💡 To fix: Update config.yaml vocab_size to {actual_vocab_size}")
+        print(f"   💡 To fix: Update model_config.py vocab_size to {actual_vocab_size}")
     else:
         actual_vocab_size = config_vocab_size
         print(f"✅ Vocab size matches: {actual_vocab_size:,}")
@@ -383,7 +383,7 @@ def fast_integration_test():
 
 def main():
     parser = argparse.ArgumentParser(description="Train curriculum diffusion model")
-    parser.add_argument("--config", default="config.yaml", help="Config file path")
+    parser.add_argument("--config", default=None, help="Config file path")
     parser.add_argument("--data-dir", default="data/processed", help="Processed data directory")
     parser.add_argument("--output", default="outputs", help="Output directory")
     parser.add_argument("--resume", help="Resume from checkpoint")

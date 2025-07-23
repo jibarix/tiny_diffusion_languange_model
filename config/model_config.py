@@ -23,7 +23,7 @@ class ModelConfig:
     # ================================
     # VOCABULARY & SEQUENCE
     # ================================
-    vocab_size: int = 25000               # Vocabulary size (compressed from 50k GPT-2)
+    vocab_size: int = 4191               # Vocabulary size (compressed from 50k GPT-2)
     max_seq_len: int = 512                # Maximum sequence length
     
     # ================================

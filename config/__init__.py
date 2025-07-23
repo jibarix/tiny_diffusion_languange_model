@@ -134,7 +134,7 @@ class ProjectConfig:
     def override_from_args(self, args: argparse.Namespace) -> 'ProjectConfig':
         """Override from command line arguments"""
         overrides = {}
-        
+
         # Map common argument names to config paths
         arg_mapping = {
             'batch_size': 'training.batch_size',
@@ -149,26 +149,28 @@ class ProjectConfig:
             'output_dir': 'output_dir',
             'device': 'device',
             'seed': 'seed',
-            # NEW: Evaluation arguments
             'eval_batch_size': 'evaluation.batch_size',
             'eval_samples': 'evaluation.max_samples',
             'generation_samples': 'evaluation.generation_num_samples'
         }
-        
+
         # Apply mapped arguments
         for arg_name, config_path in arg_mapping.items():
             if hasattr(args, arg_name):
                 value = getattr(args, arg_name)
                 if value is not None:
                     overrides[config_path] = value
-        
+
+        # Get the names of the actual fields in the ProjectConfig dataclass
+        config_fields = {f.name for f in fields(self)}
+
         # Apply any additional arguments that match config structure
         for key, value in vars(args).items():
             if value is not None and key not in arg_mapping:
-                # Try direct mapping for unmapped arguments
-                if hasattr(self, key):
+                # Try direct mapping for unmapped arguments, but only if they are actual fields
+                if key in config_fields:
                     overrides[key] = value
-        
+
         return self.override_from_dict(overrides)
     
     def override_from_file(self, config_file: Union[str, Path]) -> 'ProjectConfig':

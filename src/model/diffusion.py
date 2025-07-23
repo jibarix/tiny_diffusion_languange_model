@@ -238,6 +238,14 @@ class MaskedDiffusionLM(nn.Module):
             corrupted_input = input_ids
             targets = input_ids
             corruption_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+
+        # ================================== THE CORRECT FIX ==================================
+        # The original attention_mask is based on the initial input_ids. Since we create a
+        # new `corrupted_input`, we must also create a new attention_mask that
+        # corresponds to it. This ensures the dimensions are always correct.
+        if attention_mask is not None:
+            attention_mask = (corrupted_input != self.tokenizer.pad_token_id).to(self.config.device)
+        # =====================================================================================
         
         # Forward through transformer
         logits = self.transformer(
