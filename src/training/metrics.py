@@ -1,5 +1,5 @@
 """
-Training Metrics
+Training Metrics - FIXED VERSION WITH CONFIG SUPPORT
 Loss tracking, perplexity calculation, and training progress monitoring
 """
 
@@ -11,19 +11,30 @@ import numpy as np
 
 
 class TrainingMetrics:
-    """Tracks training metrics across epochs and stages"""
+    """Tracks training metrics across epochs and stages - FIXED VERSION"""
     
-    def __init__(self, window_size: int = 100):
-        self.window_size = window_size
+    def __init__(self, config=None):
+        # FIXED: Get window size from config instead of hardcoding
+        if config and hasattr(config, 'training'):
+            self.window_size = getattr(config.training, 'metrics_window_size', 100)
+            self.default_batch_size = getattr(config.training, 'batch_size', 32)
+            self.max_seq_len = getattr(config.model, 'max_seq_len', 512) if hasattr(config, 'model') else 512
+            self.speed_calculation_steps = getattr(config.training, 'speed_calculation_steps', 100)
+        else:
+            # Fallback defaults
+            self.window_size = 100
+            self.default_batch_size = 32
+            self.max_seq_len = 512
+            self.speed_calculation_steps = 100
         
         # Raw metrics storage
         self.step_metrics = []
         self.epoch_metrics = []
         self.stage_metrics = []
         
-        # Rolling windows for smooth metrics
-        self.loss_window = deque(maxlen=window_size)
-        self.lr_window = deque(maxlen=window_size)
+        # Rolling windows for smooth metrics (now configurable)
+        self.loss_window = deque(maxlen=self.window_size)
+        self.lr_window = deque(maxlen=self.window_size)
         
         # Timing
         self.start_time = time.time()
@@ -33,7 +44,7 @@ class TrainingMetrics:
         self.best_train_loss = float('inf')
         self.best_val_loss = float('inf')
         self.best_val_perplexity = float('inf')
-        
+    
     def update_step(self, step: int, loss: float, lr: float, 
                    masking_rate: float = None, **kwargs):
         """Update step-level metrics"""
@@ -113,11 +124,15 @@ class TrainingMetrics:
             return 0.0
         return np.mean(list(self.lr_window))
     
-    def get_training_speed(self, recent_steps: int = 100) -> Dict[str, float]:
-        """Calculate training speed metrics"""
+    def get_training_speed(self, recent_steps: Optional[int] = None) -> Dict[str, float]:
+        """Calculate training speed metrics - FIXED VERSION"""
         if len(self.step_metrics) < 2:
             return {'steps_per_sec': 0.0, 'tokens_per_sec': 0.0}
         
+        # FIXED: Use configurable recent steps
+        if recent_steps is None:
+            recent_steps = self.speed_calculation_steps
+            
         recent_metrics = self.step_metrics[-recent_steps:]
         if len(recent_metrics) < 2:
             recent_metrics = self.step_metrics
@@ -128,9 +143,8 @@ class TrainingMetrics:
         
         steps_per_sec = len(recent_metrics) / time_span
         
-        # Estimate tokens per second (assuming batch_size * seq_len per step)
-        # This is approximate - actual implementation would need batch info
-        tokens_per_sec = steps_per_sec * 32 * 512  # Default estimates
+        # FIXED: Use configurable batch size and sequence length
+        tokens_per_sec = steps_per_sec * self.default_batch_size * self.max_seq_len
         
         return {
             'steps_per_sec': steps_per_sec,
@@ -244,6 +258,12 @@ class TrainingMetrics:
                 'train_loss': self.best_train_loss,
                 'val_loss': self.best_val_loss,
                 'val_perplexity': self.best_val_perplexity,
+            },
+            'config_params': {
+                'window_size': self.window_size,
+                'default_batch_size': self.default_batch_size,
+                'max_seq_len': self.max_seq_len,
+                'speed_calculation_steps': self.speed_calculation_steps
             }
         }
     
@@ -257,6 +277,13 @@ class TrainingMetrics:
         self.best_train_loss = best_metrics.get('train_loss', float('inf'))
         self.best_val_loss = best_metrics.get('val_loss', float('inf'))
         self.best_val_perplexity = best_metrics.get('val_perplexity', float('inf'))
+        
+        # Load config params if available
+        config_params = metrics_data.get('config_params', {})
+        self.window_size = config_params.get('window_size', self.window_size)
+        self.default_batch_size = config_params.get('default_batch_size', self.default_batch_size)
+        self.max_seq_len = config_params.get('max_seq_len', self.max_seq_len)
+        self.speed_calculation_steps = config_params.get('speed_calculation_steps', self.speed_calculation_steps)
 
 
 class LossTracker:

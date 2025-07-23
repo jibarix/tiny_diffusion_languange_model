@@ -1,5 +1,5 @@
 """
-Format-aware Dataset Classes for Curriculum Training
+Format-aware Dataset Classes for Curriculum Training - FIXED VERSION
 """
 
 import torch
@@ -9,12 +9,19 @@ from typing import List
 
 
 class SentenceDataset(Dataset):
-    """Individual sentences (Stage I)"""
+    """Individual sentences (Stage I) - FIXED VERSION"""
     
-    def __init__(self, segments, tokenizer, max_length: int = 512):
+    def __init__(self, segments, tokenizer, max_length: int = None, config=None):
         self.segments = segments
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        
+        # FIXED: Get max_length from config instead of hardcoding 512
+        if max_length is not None:
+            self.max_length = max_length
+        elif config and hasattr(config, 'model'):
+            self.max_length = getattr(config.model, 'max_seq_len', 512)
+        else:
+            self.max_length = 512  # Fallback
         
     def __len__(self):
         return len(self.segments)
@@ -47,13 +54,20 @@ class SentenceDataset(Dataset):
 
 
 class PairDataset(Dataset):
-    """Evidence-claim pairs (Stage II)"""
+    """Evidence-claim pairs (Stage II) - FIXED VERSION"""
     
-    def __init__(self, segments, tokenizer, max_length: int = 512):
+    def __init__(self, segments, tokenizer, max_length: int = None, config=None):
         self.segments = segments
         self.tokenizer = tokenizer
-        self.max_length = max_length
         self.sep_token = tokenizer.sep_token or " [SEP] "
+        
+        # FIXED: Get max_length from config instead of hardcoding 512
+        if max_length is not None:
+            self.max_length = max_length
+        elif config and hasattr(config, 'model'):
+            self.max_length = getattr(config.model, 'max_seq_len', 512)
+        else:
+            self.max_length = 512  # Fallback
         
     def __len__(self):
         return len(self.segments) // 2  # Pairs
@@ -91,13 +105,28 @@ class PairDataset(Dataset):
 
 
 class ParagraphDataset(Dataset):
-    """Multi-sentence paragraphs (Stage III)"""
+    """Multi-sentence paragraphs (Stage III) - FIXED VERSION"""
     
-    def __init__(self, segments, tokenizer, max_length: int = 512, sentences_per_paragraph: int = 4):
+    def __init__(self, segments, tokenizer, max_length: int = None, 
+                 sentences_per_paragraph: int = None, config=None):
         self.segments = segments
         self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.sentences_per_paragraph = sentences_per_paragraph
+        
+        # FIXED: Get max_length from config instead of hardcoding 512
+        if max_length is not None:
+            self.max_length = max_length
+        elif config and hasattr(config, 'model'):
+            self.max_length = getattr(config.model, 'max_seq_len', 512)
+        else:
+            self.max_length = 512  # Fallback
+        
+        # FIXED: Get sentences_per_paragraph from config
+        if sentences_per_paragraph is not None:
+            self.sentences_per_paragraph = sentences_per_paragraph
+        elif config and hasattr(config, 'curriculum'):
+            self.sentences_per_paragraph = getattr(config.curriculum, 'sentences_per_paragraph', 4)
+        else:
+            self.sentences_per_paragraph = 4  # Fallback
         
     def __len__(self):
         return len(self.segments) // self.sentences_per_paragraph

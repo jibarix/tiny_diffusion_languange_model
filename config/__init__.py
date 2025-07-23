@@ -1,5 +1,5 @@
 """
-Simplified Configuration Manager for Tiny Text Diffusion Model
+Simplified Configuration Manager for Tiny Text Diffusion Model - UPDATED VERSION
 Single source of truth with simple override system - NO YAML COMPLEXITY
 """
 
@@ -14,16 +14,18 @@ from .training_config import TrainingConfig
 from .curriculum_config import CurriculumConfig
 from .generation_config import GenerationConfig
 from .pipeline_config import PipelineConfig
+from .evaluation_config import EvaluationConfig  # NEW: Added evaluation config
 
 
 @dataclass
 class ProjectConfig:
-    """Simplified configuration manager - Python is the source of truth"""
+    """Simplified configuration manager - Python is the source of truth - UPDATED VERSION"""
     model: ModelConfig
     training: TrainingConfig
     curriculum: CurriculumConfig
     generation: GenerationConfig
     pipeline: PipelineConfig
+    evaluation: EvaluationConfig  # NEW: Added evaluation configuration
     
     # Project paths
     data_dir: str = "data"
@@ -41,24 +43,53 @@ class ProjectConfig:
     
     @classmethod
     def default(cls) -> 'ProjectConfig':
-        """Create default configuration - SINGLE SOURCE OF TRUTH"""
+        """Create default configuration - SINGLE SOURCE OF TRUTH - UPDATED"""
         return cls(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.default(),
             curriculum=CurriculumConfig.three_stage(),
             generation=GenerationConfig.default(),
-            pipeline=PipelineConfig.default()
+            pipeline=PipelineConfig.default(),
+            evaluation=EvaluationConfig.default()  # NEW: Added evaluation config
         )
     
     @classmethod
     def debug(cls) -> 'ProjectConfig':
-        """Fast debug configuration"""
+        """Fast debug configuration - UPDATED"""
         return cls(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.fast_debug(),
             curriculum=CurriculumConfig.fast_debug(),
             generation=GenerationConfig.fast(),
+            pipeline=PipelineConfig.fast_processing(),
+            evaluation=EvaluationConfig.fast(),  # NEW: Added fast evaluation config
             experiment_name="debug-run"
+        )
+    
+    @classmethod
+    def comprehensive(cls) -> 'ProjectConfig':
+        """Comprehensive configuration for research - NEW"""
+        return cls(
+            model=ModelConfig.tiny_125m(),
+            training=TrainingConfig.default(),
+            curriculum=CurriculumConfig.research_config(),
+            generation=GenerationConfig.creative(),
+            pipeline=PipelineConfig.high_quality(),
+            evaluation=EvaluationConfig.comprehensive(),
+            experiment_name="comprehensive-research"
+        )
+    
+    @classmethod
+    def memory_efficient(cls) -> 'ProjectConfig':
+        """Memory-efficient configuration for limited hardware - NEW"""
+        return cls(
+            model=ModelConfig.memory_efficient_125m(),
+            training=TrainingConfig.memory_efficient(),
+            curriculum=CurriculumConfig.fast_debug(),
+            generation=GenerationConfig.fast(),
+            pipeline=PipelineConfig.fast_processing(),
+            evaluation=EvaluationConfig.memory_efficient(),
+            experiment_name="memory-efficient"
         )
     
     def override(self, **kwargs) -> 'ProjectConfig':
@@ -117,7 +148,11 @@ class ProjectConfig:
             'data_dir': 'data_dir',
             'output_dir': 'output_dir',
             'device': 'device',
-            'seed': 'seed'
+            'seed': 'seed',
+            # NEW: Evaluation arguments
+            'eval_batch_size': 'evaluation.batch_size',
+            'eval_samples': 'evaluation.max_samples',
+            'generation_samples': 'evaluation.generation_num_samples'
         }
         
         # Apply mapped arguments
@@ -145,7 +180,9 @@ class ProjectConfig:
             "experiment_name": "frankenstein-experiment",
             "model.vocab_size": 4196,
             "training.batch_size": 16,
-            "training.learning_rate": 1e-4
+            "training.learning_rate": 1e-4,
+            "evaluation.batch_size": 4,
+            "evaluation.max_samples": 50
         }
         """
         config_path = Path(config_file)
@@ -177,13 +214,15 @@ class ProjectConfig:
         return value
     
     def validate(self) -> bool:
-        """Validate all configuration components"""
+        """Validate all configuration components - UPDATED"""
         try:
             # Validate each section
             self.model.validate()
             self.training.validate(self.model)
             self.curriculum.validate()
             self.generation.validate()
+            self.pipeline.validate()  # NEW: Validate pipeline config
+            self.evaluation.validate()  # NEW: Validate evaluation config
             
             # Validate paths
             assert isinstance(self.data_dir, str), "data_dir must be string"
@@ -201,6 +240,11 @@ class ProjectConfig:
             if self.model.vocab_size != self.training.effective_vocab_size if hasattr(self.training, 'effective_vocab_size') else True:
                 print("Warning: Model vocab size may not match training expectations")
             
+            # NEW: Cross-validate evaluation settings with model/training
+            if self.evaluation.generation_max_length > self.model.max_seq_len:
+                print(f"Warning: Evaluation max length ({self.evaluation.generation_max_length}) "
+                      f"exceeds model max seq len ({self.model.max_seq_len})")
+            
             return True
             
         except Exception as e:
@@ -208,7 +252,7 @@ class ProjectConfig:
             return False
     
     def summary(self) -> str:
-        """Generate human-readable config summary"""
+        """Generate human-readable config summary - UPDATED"""
         lines = [
             f"Experiment: {self.experiment_name}",
             f"Device: {self.device}",
@@ -233,13 +277,20 @@ class ProjectConfig:
             "Generation:",
             f"  Temperature: {self.generation.temperature}",
             f"  Steps: {self.generation.num_steps}",
-            f"  Max Length: {self.generation.max_length}"
+            f"  Max Length: {self.generation.max_length}",
+            "",
+            # NEW: Evaluation summary
+            "Evaluation:",
+            f"  Test Samples: {self.evaluation.max_samples}",
+            f"  Batch Size: {self.evaluation.batch_size}",
+            f"  Generation Samples: {self.evaluation.generation_num_samples}",
+            f"  Detailed Metrics: {'✅' if self.evaluation.detailed_metrics else '❌'}"
         ]
         
         return "\n".join(lines)
     
     def save_to_file(self, filepath: Union[str, Path]):
-        """Save current config as Python override file"""
+        """Save current config as Python override file - UPDATED"""
         config_path = Path(filepath)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -268,7 +319,7 @@ class ProjectConfig:
         
         # Add top-level overrides
         for field in fields(self):
-            if field.name in ['model', 'training', 'curriculum', 'generation']:
+            if field.name in ['model', 'training', 'curriculum', 'generation', 'pipeline', 'evaluation']:
                 continue  # Handle these specially
             
             current_value = getattr(self, field.name)
@@ -284,7 +335,8 @@ class ProjectConfig:
         add_section_overrides("model", self.model, defaults.model)
         add_section_overrides("training", self.training, defaults.training)
         add_section_overrides("generation", self.generation, defaults.generation)
-        # Note: curriculum is complex, skip for now
+        add_section_overrides("evaluation", self.evaluation, defaults.evaluation)  # NEW
+        # Note: curriculum and pipeline are complex, skip for now
         
         content.append("}")
         
@@ -302,6 +354,14 @@ def get_default_config() -> ProjectConfig:
 def get_debug_config() -> ProjectConfig:
     """Get debug project configuration"""
     return ProjectConfig.debug()
+
+def get_comprehensive_config() -> ProjectConfig:
+    """Get comprehensive research configuration - NEW"""
+    return ProjectConfig.comprehensive()
+
+def get_memory_efficient_config() -> ProjectConfig:
+    """Get memory-efficient configuration - NEW"""
+    return ProjectConfig.memory_efficient()
 
 def load_config_with_overrides(config_file: Optional[str] = None, 
                               args: Optional[argparse.Namespace] = None,
