@@ -1,5 +1,5 @@
 """
-Text Generation Engine
+Text Generation Engine - FIXED VERSION
 Inference pipeline for masked diffusion models
 """
 
@@ -8,17 +8,18 @@ import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 import time
-from config import GenerationConfig
+from config import GenerationConfig  # Import config
 
 
 class DiffusionGenerator:
     """Text generation using masked diffusion model"""
     
-    def __init__(self, model, tokenizer, device='cuda', vocab_level: int = 5):
+    def __init__(self, model, tokenizer, device='cuda', vocab_level: int = 5, 
+                 config: GenerationConfig = None):  # FIX: Add config parameter
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-        self.config = config or GenerationConfig.default()  # Use config instead of hardcoded values
+        self.config = config or GenerationConfig.default()  # FIX: Now config is defined
         self.vocab_level = vocab_level
         
         self.model.eval()
@@ -36,81 +37,25 @@ class DiffusionGenerator:
         if model_vocab_size != tokenizer_vocab_size:
             print(f"Warning: Model vocab size ({model_vocab_size:,}) != "
                   f"Tokenizer vocab size ({tokenizer_vocab_size:,})")
-            
-    @classmethod
-    def from_checkpoint(cls, checkpoint_path: str, data_dir: str, 
-                       vocab_level: int = 5, device: str = 'cuda'):
-        """Create generator from checkpoint with appropriate tokenizer"""
-        from pathlib import Path
-        import torch
-        from transformers import AutoTokenizer
-        
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        config = checkpoint['config']
-        
-        # Load appropriate tokenizer
-        tokenizer_path = Path(data_dir) / f"tokenizer_level_{vocab_level}"
-        if not tokenizer_path.exists():
-            tokenizer_path = Path(data_dir) / "tokenizer_level_1"
-        
-        if tokenizer_path.exists():
-            tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
-        else:
-            # Fallback
-            tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
-                             "bos_token": "<bos>", "eos_token": "<eos>"}
-            tokens_to_add = {k: v for k, v in special_tokens.items() 
-                            if getattr(tokenizer, k) is None}
-            if tokens_to_add:
-                tokenizer.add_special_tokens(tokens_to_add)
-        
-        # Create model
-        from model.diffusion import MaskedDiffusionLM
-        model = MaskedDiffusionLM(
-            vocab_size=len(tokenizer),
-            d_model=config.model.d_model,
-            n_layers=config.model.n_layers,
-            n_heads=config.model.n_heads,
-            d_ff=config.model.d_ff,
-            max_seq_len=config.model.max_seq_len,
-            dropout=config.model.dropout,
-            attention_dropout=config.model.attention_dropout,
-            use_bias=config.model.use_bias,
-            norm_eps=config.model.norm_eps,
-            pad_token_id=tokenizer.pad_token_id,
-            mask_token_id=tokenizer.mask_token_id
-        )
-        
-        # Load weights
-        model.load_state_dict(checkpoint['model_state_dict'])
-        
-        return cls(model, tokenizer, device, vocab_level)
     
     def generate(self,
                 prompt: str = "",
-                max_length = kwargs.get('max_length', self.config.max_length),
-                num_steps = kwargs.get('num_steps', self.config.num_steps),
-                temperature = kwargs.get('temperature', self.config.temperature),
+                max_length: Optional[int] = None,      # FIX: Proper optional parameters
+                num_steps: Optional[int] = None,
+                temperature: Optional[float] = None,
                 top_k: Optional[int] = None,
                 top_p: Optional[float] = None,
                 num_return_sequences: int = 1) -> List[str]:
         """
-        Generate text using iterative demasking
-        
-        Args:
-            prompt: Starting prompt text
-            max_length: Maximum sequence length
-            num_steps: Number of denoising steps
-            temperature: Sampling temperature
-            top_k: Top-k sampling
-            top_p: Nucleus sampling
-            num_return_sequences: Number of sequences to generate
-            
-        Returns:
-            List of generated text strings
+        Generate text using iterative demasking - FIXED VERSION
         """
+        # FIX: Use config defaults properly
+        max_length = max_length or self.config.max_length
+        num_steps = num_steps or self.config.num_steps  
+        temperature = temperature or self.config.temperature
+        top_k = top_k or self.config.top_k
+        top_p = top_p or self.config.top_p
+        
         with torch.no_grad():
             # Tokenize prompt
             if prompt:

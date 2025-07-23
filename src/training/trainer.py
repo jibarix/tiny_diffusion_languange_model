@@ -438,7 +438,7 @@ class EnhancedCurriculumTrainer:
         # Dynamic learning rate scheduler
         self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=1000,  # Will be adjusted per stage
+            T_0=self.config.training.scheduler_restart_period,  # Will be adjusted per stage
             T_mult=2,
             eta_min=self.config.training.min_learning_rate
         )
@@ -817,7 +817,7 @@ class EnhancedCurriculumTrainer:
         """Enhanced curriculum training with dynamic adaptation"""
         self.logger.info("Starting enhanced curriculum training...")
         
-        recent_losses = deque(maxlen=20)
+        recent_losses = deque(maxlen=self.config.training.loss_history_window)
         
         try:
             # Training loop through curriculum stages
