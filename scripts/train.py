@@ -209,14 +209,16 @@ def run_training(config: Dict[str, Any], data_pipeline: DataPipeline, resume_fro
     # Resume from checkpoint if specified
     if resume_from:
         logger.info(f"Resuming from checkpoint: {resume_from}")
-        trainer.load_checkpoint(resume_from)
+        trainer.resume_from_checkpoint(resume_from)
     
     # Execute curriculum training
     logger.info("Beginning 3-stage curriculum training...")
-    best_model_path = trainer.train_curriculum()
+    stage_results = trainer.train_full_curriculum()  # Fixed method name
     
+    # Return best model path (constructed from trainer's checkpoint directory)
+    best_model_path = trainer.checkpoint_dir / "best_stage3.pt"
     logger.info(f"Training complete! Best model saved to: {best_model_path}")
-    return best_model_path
+    return str(best_model_path)
 
 
 def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataPipeline):
