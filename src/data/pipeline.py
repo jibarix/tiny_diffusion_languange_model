@@ -1,5 +1,5 @@
 """
-Complete Data Processing Pipeline
+Complete Data Processing Pipeline - FIXED VERSION
 Text → sentences → difficulty scores → curriculum → dataset
 """
 
@@ -88,29 +88,31 @@ class TextDataPipeline:
         return sentences
     
     def create_tokenizer(self, texts: List[str]) -> AutoTokenizer:
-        """Create custom tokenizer from text corpus"""
-        # Start with GPT-2 tokenizer
-        base_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        """Create tokenizer with special tokens"""
+        # Use base GPT-2 tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
         
-        # Get vocabulary frequency
-        word_freq = {}
-        for text in texts:
-            tokens = base_tokenizer.tokenize(text.lower())
-            for token in tokens:
-                word_freq[token] = word_freq.get(token, 0) + 1
+        # Add special tokens if they don't exist
+        special_tokens = {
+            "pad_token": "<pad>",
+            "mask_token": "<mask>", 
+            "bos_token": "<bos>",
+            "eos_token": "<eos>"
+        }
         
-        # Sort by frequency and take top tokens
-        sorted_vocab = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-        top_vocab = [token for token, freq in sorted_vocab[:self.target_vocab_size-4]]
+        # Only add tokens that don't exist
+        tokens_to_add = {}
+        if tokenizer.pad_token is None:
+            tokens_to_add["pad_token"] = special_tokens["pad_token"]
+        if tokenizer.mask_token is None:
+            tokens_to_add["mask_token"] = special_tokens["mask_token"] 
+        if tokenizer.bos_token is None:
+            tokens_to_add["bos_token"] = special_tokens["bos_token"]
+        if tokenizer.eos_token is None:
+            tokens_to_add["eos_token"] = special_tokens["eos_token"]
         
-        # Add special tokens
-        special_tokens = ["<pad>", "<mask>", "<bos>", "<eos>"]
-        final_vocab = special_tokens + top_vocab
-        
-        # Create new tokenizer with compressed vocab
-        tokenizer = base_tokenizer
-        tokenizer.vocab = {token: i for i, token in enumerate(final_vocab)}
-        tokenizer.vocab_size = len(final_vocab)
+        if tokens_to_add:
+            tokenizer.add_special_tokens(tokens_to_add)
         
         return tokenizer
     
@@ -120,110 +122,78 @@ class TextDataPipeline:
             self.tokenizer = self.create_tokenizer(segments)
         
         scores = []
+        for text in segments:
+            # Simple approach: use average word length and readability
+            tokens = self.tokenizer.encode(text, add_special_tokens=False)
+            avg_token_length = len(tokens) / max(1, len(text.split()))
+            scores.append(avg_token_length)
         
-        # Calculate token frequencies across all segments
-        all_tokens = []
-        for segment in segments:
-            tokens = self.tokenizer.tokenize(segment.lower())
-            all_tokens.extend(tokens)
-        
-        token_freq = {}
-        for token in all_tokens:
-            token_freq[token] = token_freq.get(token, 0) + 1
-        
-        total_tokens = len(all_tokens)
-        
-        # Score each segment
-        for segment in segments:
-            tokens = self.tokenizer.tokenize(segment.lower())
-            if not tokens:
-                scores.append(0.0)
-                continue
-            
-            # Calculate average inverse frequency
-            rarities = []
-            for token in tokens:
-                freq = token_freq.get(token, 1)
-                rarity = np.log(total_tokens / freq)  # IDF-like score
-                rarities.append(rarity)
-            
-            scores.append(np.mean(rarities))
-        
-        # Normalize to 0-1
-        scores = np.array(scores)
-        if scores.std() > 0:
-            scores = (scores - scores.min()) / (scores.max() - scores.min())
-        
-        return scores.tolist()
+        return scores
     
-    def calculate_syntactic_difficulty(self, segments: List[str]) -> List[float]:
-        """Calculate syntactic complexity scores"""
+    def calculate_syntactic_complexity(self, segments: List[str]) -> List[float]:
+        """Calculate syntactic complexity using readability metrics"""
         scores = []
+        for text in segments:
+            try:
+                # Flesch Reading Ease (inverted so higher = harder)
+                flesch = textstat.flesch_reading_ease(text)
+                complexity = max(0, (100 - flesch) / 100)
+            except:
+                complexity = 0.5  # Default to medium complexity
+            scores.append(complexity)
         
-        for segment in segments:
-            # Use multiple readability metrics
-            flesch_kincaid = textstat.flesch_kincaid_grade(segment)
-            gunning_fog = textstat.gunning_fog(segment)
-            
-            # Sentence length and clause count
-            doc = self.nlp(segment)
-            sent_length = len([token for token in doc if not token.is_space])
-            
-            # Count subordinate clauses (approximate)
-            clause_markers = len([token for token in doc 
-                                if token.dep_ in ['mark', 'advcl', 'acl', 'relcl']])
-            
-            # Combine metrics
-            complexity = (
-                flesch_kincaid * 0.4 + 
-                gunning_fog * 0.3 + 
-                np.log(sent_length) * 0.2 + 
-                clause_markers * 0.1
-            )
-            
-            scores.append(max(0, complexity))
-        
-        # Normalize to 0-1
-        scores = np.array(scores)
-        if scores.std() > 0:
-            scores = (scores - scores.min()) / (scores.max() - scores.min())
-        
-        return scores.tolist()
+        return scores
     
     def calculate_thematic_centrality(self, segments: List[str]) -> List[float]:
-        """Calculate thematic centrality using clustering"""
-        # Generate embeddings
-        print("Generating sentence embeddings...")
+        """Calculate thematic centrality using sentence embeddings"""
+        print("Calculating sentence embeddings...")
         embeddings = self.embedding_model.encode(segments, show_progress_bar=True)
         self.embeddings = embeddings
         
-        # Perform clustering
-        print(f"Clustering into {self.n_clusters} themes...")
-        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42)
-        cluster_labels = kmeans.fit_predict(embeddings)
-        self.cluster_model = kmeans
+        # Cluster sentences
+        print(f"Clustering into {self.n_clusters} groups...")
+        scaler = StandardScaler()
+        embeddings_scaled = scaler.fit_transform(embeddings)
         
-        # Calculate centrality (inverse distance to cluster center)
-        centralities = []
+        self.cluster_model = KMeans(n_clusters=self.n_clusters, random_state=42)
+        cluster_labels = self.cluster_model.fit_predict(embeddings_scaled)
+        
+        # Calculate centrality within each cluster
+        centrality_scores = []
         for i, embedding in enumerate(embeddings):
             cluster_id = cluster_labels[i]
-            center = kmeans.cluster_centers_[cluster_id]
-            distance = np.linalg.norm(embedding - center)
-            centrality = 1.0 / (1.0 + distance)  # Inverse distance
-            centralities.append(centrality)
+            cluster_center = self.cluster_model.cluster_centers_[cluster_id]
+            
+            # Distance to cluster center (inverted so closer = higher centrality)
+            distance = np.linalg.norm(embeddings_scaled[i] - cluster_center)
+            centrality = max(0, 1 - distance / 2)  # Normalize
+            centrality_scores.append(centrality)
         
-        # Normalize to 0-1 (higher = more central)
-        centralities = np.array(centralities)
-        if centralities.std() > 0:
-            centralities = (centralities - centralities.min()) / (centralities.max() - centralities.min())
+        return centrality_scores, cluster_labels
+    
+    def create_curriculum_splits(self) -> Dict[str, List[TextSegment]]:
+        """Create curriculum splits based on difficulty"""
+        # Sort by combined difficulty
+        sorted_segments = sorted(self.segments, key=lambda x: x.combined_difficulty)
         
-        return centralities.tolist(), cluster_labels.tolist()
+        n_segments = len(sorted_segments)
+        easy_end = n_segments // 3
+        medium_end = 2 * n_segments // 3
+        
+        splits = {
+            'easy': sorted_segments[:easy_end],
+            'medium': sorted_segments[easy_end:medium_end], 
+            'hard': sorted_segments[medium_end:],
+            'all': sorted_segments
+        }
+        
+        return splits
     
     def process_text_file(self, file_path: str) -> List[TextSegment]:
-        """Complete pipeline: text file → processed segments"""
+        """Process text file and create segments with difficulty scores"""
         print(f"Processing: {file_path}")
         
-        # Load and segment
+        # Load and segment text
         text = self.load_text(file_path)
         sentences = self.segment_text(text)
         print(f"Found {len(sentences)} sentences")
@@ -232,65 +202,38 @@ class TextDataPipeline:
         print("Calculating lexical difficulty...")
         lexical_scores = self.calculate_lexical_difficulty(sentences)
         
-        print("Calculating syntactic difficulty...")
-        syntactic_scores = self.calculate_syntactic_difficulty(sentences)
+        print("Calculating syntactic complexity...")
+        syntactic_scores = self.calculate_syntactic_complexity(sentences)
         
         print("Calculating thematic centrality...")
-        centrality_scores, cluster_labels = self.calculate_thematic_centrality(sentences)
+        thematic_scores, cluster_labels = self.calculate_thematic_centrality(sentences)
         
-        # Create segments with scores
-        segments = []
+        # Create segments
+        self.segments = []
         for i, sentence in enumerate(sentences):
+            # Combine difficulty scores (you can adjust weights)
+            combined = (
+                0.3 * lexical_scores[i] + 
+                0.4 * syntactic_scores[i] + 
+                0.3 * (1 - thematic_scores[i])  # Invert centrality for difficulty
+            )
+            
             segment = TextSegment(
                 text=sentence,
                 index=i,
                 lexical_rarity=lexical_scores[i],
                 syntactic_complexity=syntactic_scores[i],
-                thematic_centrality=centrality_scores[i],
-                length=len(sentence),
+                thematic_centrality=thematic_scores[i],
+                combined_difficulty=combined,
+                length=len(sentence.split()),
                 cluster_id=cluster_labels[i]
             )
-            
-            # Combined difficulty score (weighted)
-            segment.combined_difficulty = (
-                0.3 * segment.lexical_rarity +
-                0.3 * segment.syntactic_complexity +
-                0.4 * (1.0 - segment.thematic_centrality)  # Invert centrality
-            )
-            
-            segments.append(segment)
+            self.segments.append(segment)
         
-        self.segments = segments
-        return segments
-    
-    def create_curriculum_splits(self, 
-                                easy_threshold: float = 33.0,
-                                hard_threshold: float = 67.0) -> Dict[str, List[TextSegment]]:
-        """Split segments into curriculum stages"""
-        if not self.segments:
-            raise ValueError("No segments found. Run process_text_file first.")
-        
-        # Sort by combined difficulty
-        sorted_segments = sorted(self.segments, key=lambda x: x.combined_difficulty)
-        
-        n_segments = len(sorted_segments)
-        easy_cutoff = int(n_segments * easy_threshold / 100)
-        hard_cutoff = int(n_segments * hard_threshold / 100)
-        
-        splits = {
-            'easy': sorted_segments[:easy_cutoff],
-            'medium': sorted_segments[easy_cutoff:hard_cutoff],
-            'hard': sorted_segments[hard_cutoff:],
-            'all': sorted_segments
-        }
-        
-        print(f"Curriculum splits: Easy({len(splits['easy'])}), "
-              f"Medium({len(splits['medium'])}), Hard({len(splits['hard'])})")
-        
-        return splits
+        return self.segments
     
     def save_data(self, output_dir: str):
-        """Save processed data"""
+        """Save processed data to disk"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
@@ -298,28 +241,29 @@ class TextDataPipeline:
         with open(output_path / "segments.pkl", "wb") as f:
             pickle.dump(self.segments, f)
         
-        # Save embeddings
-        if self.embeddings is not None:
-            np.save(output_path / "embeddings.npy", self.embeddings)
-        
-        # Save tokenizer
-        if self.tokenizer is not None:
-            self.tokenizer.save_pretrained(output_path / "tokenizer")
-        
-        # Save cluster model
-        if self.cluster_model is not None:
-            with open(output_path / "cluster_model.pkl", "wb") as f:
-                pickle.dump(self.cluster_model, f)
-        
         # Save curriculum splits
         splits = self.create_curriculum_splits()
         with open(output_path / "curriculum_splits.pkl", "wb") as f:
             pickle.dump(splits, f)
         
+        # Save tokenizer
+        if self.tokenizer:
+            tokenizer_path = output_path / "tokenizer"
+            self.tokenizer.save_pretrained(tokenizer_path)
+        
+        # Save embeddings
+        if self.embeddings is not None:
+            np.save(output_path / "embeddings.npy", self.embeddings)
+        
+        # Save cluster model
+        if self.cluster_model:
+            with open(output_path / "cluster_model.pkl", "wb") as f:
+                pickle.dump(self.cluster_model, f)
+        
         print(f"Data saved to: {output_path}")
     
     def load_data(self, data_dir: str):
-        """Load processed data"""
+        """Load previously processed data"""
         data_path = Path(data_dir)
         
         # Load segments
@@ -348,7 +292,7 @@ def main():
     pipeline = TextDataPipeline(n_clusters=8, target_vocab_size=25000)
     
     # Process text file
-    segments = pipeline.process_text_file("data/raw/origin_of_species.txt")
+    segments = pipeline.process_text_file("data/raw/complete_works_shakespeare.txt")
     
     # Save results
     pipeline.save_data("data/processed")

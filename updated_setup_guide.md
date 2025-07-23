@@ -88,7 +88,25 @@ pip install "numpy<2"
 python -m spacy download en_core_web_sm
 ```
 
-### 12. Verify GPU Access
+### 12. Download NLTK Data Packages
+**New step:** Download required NLTK data for text processing:
+```bash
+python -c "import nltk; nltk.download('punkt_tab'); nltk.download('stopwords'); nltk.download('punkt')"
+```
+
+**Alternative (download all common NLTK data):**
+```bash
+python -c "import nltk; nltk.download('popular')"
+```
+*This downloads ~100MB but prevents future NLTK missing data errors.*
+
+### 13. Install TensorBoard
+Required for training metrics logging:
+```bash
+pip install tensorboard
+```
+
+### 14. Verify GPU Access
 ```python
 import torch
 print(f"CUDA available: {torch.cuda.is_available()}")
@@ -128,6 +146,10 @@ GRADIENT_CHECKPOINTING = True
 - For "not recognized" errors, check your PATH and restart
 - If NumPy version errors, downgrade with `pip install "numpy<2"`
 
+**NLTK Missing Data Errors:**
+- If you see "Resource punkt_tab not found", run the NLTK download command from Step 12
+- For other NLTK errors, try `python -c "import nltk; nltk.download('popular')"`
+
 **CUDA Out of Memory:**
 - Reduce `BATCH_SIZE` to 16 or 8
 - Enable gradient checkpointing
@@ -151,6 +173,25 @@ conda init powershell
 conda activate tiny-diffusion
 python --version    # Should be 3.10.x
 pip install -r requirements.txt
+```
+
+## Complete Setup Verification
+
+Run this verification script to ensure everything is working:
+
+```python
+# Test all components
+import torch
+import transformers
+import nltk
+import spacy
+import sentence_transformers
+import textstat
+
+print("✅ All packages imported successfully!")
+print(f"🔥 CUDA: {torch.cuda.is_available()}")
+print(f"🧠 SpaCy model: {spacy.load('en_core_web_sm')}")
+print("🎯 Ready for training!")
 ```
 
 ## Updated Requirements.txt

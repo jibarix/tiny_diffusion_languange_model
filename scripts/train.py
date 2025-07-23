@@ -14,15 +14,15 @@ from pathlib import Path
 import torch
 import numpy as np
 from transformers import AutoTokenizer
+from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig
 
-# Add src to path
-sys.path.append(str(Path(__file__).parent.parent / "src"))
+
+sys.path.append(str(Path(__file__).parent.parent))
 
 from config import ProjectConfig
-from model.diffusion import MaskedDiffusionLM
-from training.trainer import CurriculumTrainer
-from training.scheduler import CurriculumScheduler
-from data.pipeline import TextDataPipeline
+from src.model.diffusion import MaskedDiffusionLM
+from src.training.trainer import CurriculumTrainer
+from src.training.scheduler import CurriculumScheduler
 
 
 def set_seed(seed: int):
