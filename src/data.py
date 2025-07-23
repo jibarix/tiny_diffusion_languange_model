@@ -989,6 +989,7 @@ class DataPipeline:
 def create_debug_data_pipeline(config: Dict[str, Any], debug_text: str = None) -> DataPipeline:
     """
     Create a minimal data pipeline for debugging/testing.
+    Ensures all curriculum stages have at least 1 sample.
     """
     if debug_text is None:
         debug_text = """
@@ -997,6 +998,9 @@ def create_debug_data_pipeline(config: Dict[str, Any], debug_text: str = None) -
         Scientific research demonstrates the efficacy of iterative methodologies in computational linguistics.
         Machine learning algorithms require substantial computational resources for optimal performance.
         The fundamental principles of natural language processing encompass multiple interdisciplinary domains.
+        Complex theoretical frameworks underpin advanced artificial intelligence research paradigms.
+        Sophisticated neural network architectures enable unprecedented natural language understanding capabilities.
+        Comprehensive evaluation methodologies validate computational linguistics research findings systematically.
         """
     
     # Create temporary file
@@ -1009,10 +1013,59 @@ def create_debug_data_pipeline(config: Dict[str, Any], debug_text: str = None) -
         # Process the debug text
         pipeline = DataPipeline(config)
         pipeline.process_book(temp_path, save_dir="data/debug")
+        
+        # Fix curriculum distribution to ensure all stages have samples
+        _fix_debug_curriculum_distribution(pipeline)
+        
         return pipeline
     finally:
         # Clean up temporary file
         os.unlink(temp_path)
+
+
+def _fix_debug_curriculum_distribution(pipeline: DataPipeline):
+    """
+    Fix curriculum distribution to ensure all stages have at least 1 sample.
+    Redistributes segments evenly across all stages.
+    """
+    if not pipeline.segments or not pipeline.curriculum_datasets:
+        return
+    
+    # Get all segments
+    all_segments = pipeline.segments
+    num_segments = len(all_segments)
+    
+    # Get stage names from config
+    stages = pipeline.config.get('curriculum', {}).get('stages', [])
+    stage_names = [stage['name'] for stage in stages]
+    
+    if not stage_names:
+        return
+    
+    # Distribute segments evenly across stages
+    segments_per_stage = max(1, num_segments // len(stage_names))
+    remainder = num_segments % len(stage_names)
+    
+    # Clear existing curriculum
+    pipeline.curriculum_datasets = {}
+    
+    start_idx = 0
+    for i, stage_name in enumerate(stage_names):
+        # Calculate how many segments this stage gets
+        current_stage_size = segments_per_stage
+        if i < remainder:  # Distribute remainder segments to first stages
+            current_stage_size += 1
+        
+        end_idx = start_idx + current_stage_size
+        stage_segments = all_segments[start_idx:end_idx]
+        
+        pipeline.curriculum_datasets[stage_name] = stage_segments
+        start_idx = end_idx
+    
+    # Log the new distribution
+    print("Fixed curriculum distribution:")
+    for stage_name, segments in pipeline.curriculum_datasets.items():
+        print(f"  {stage_name}: {len(segments)} segments")
 
 
 # Example usage and testing

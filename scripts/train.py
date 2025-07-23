@@ -70,41 +70,50 @@ def setup_environment():
 
 
 def test_installation():
-    """
-    Ultra-fast test to verify installation and basic functionality.
-    
-    This runs in ~10 seconds and catches most configuration issues.
-    """
+    """Ultra-fast test to verify installation and basic functionality."""
     logger.info("Running installation test...")
     
     try:
         # Test config system
         config = ProjectConfig.debug()
-        logger.info("✓ Configuration system working")
+        logger.info("[OK] Configuration system working")
         
         # Test data pipeline creation
         pipeline = create_debug_data_pipeline(config.to_dict())
-        logger.info("✓ Data pipeline creation working")
+        logger.info("[OK] Data pipeline creation working")
         
         # Test trainer creation
         trainer = create_trainer_from_config(config.to_dict(), pipeline, device='cpu')
-        logger.info("✓ Trainer creation working")
+        logger.info("[OK] Trainer creation working")
         
-        # Test model forward pass
+        # Setup stage to initialize model
+        trainer._setup_stage(0)
+        logger.info("[OK] Stage setup working")
+        
+        # Test model forward pass with valid token IDs
         batch_size, seq_len = 2, 32
-        input_ids = torch.randint(0, 1000, (batch_size, seq_len))
+        vocab_size = len(pipeline.tokenizer.compressed_vocab)
+        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))  # Use actual vocab size
         attention_mask = torch.ones_like(input_ids)
+
+        # Add debugging here:
+        print(f"Model config: {trainer.config['model']}")
+        print(f"Input shape: {input_ids.shape}")
+        print(f"Vocab size: {vocab_size}")
+        print(f"d_model: {trainer.config['model'].get('d_model')}")
+        print(f"n_heads: {trainer.config['model'].get('n_heads')}")
+        print(f"head_dim: {trainer.config['model'].get('head_dim')}")
         
         trainer.model.eval()
         with torch.no_grad():
             outputs = trainer.model(input_ids=input_ids, attention_mask=attention_mask)
-            logger.info("✓ Model forward pass working")
+            logger.info("[OK] Model forward pass working")
         
-        logger.info("🎉 Installation test PASSED! All components working correctly.")
+        logger.info("Installation test PASSED! All components working correctly.")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Installation test FAILED: {e}")
+        logger.error(f"[FAILED] Installation test FAILED: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -143,7 +152,7 @@ def test_integration():
         return True
         
     except Exception as e:
-        logger.error(f"❌ Integration test FAILED: {e}")
+        logger.error(f"[FAILED] Integration test FAILED: {e}")
         import traceback
         traceback.print_exc()
         return False

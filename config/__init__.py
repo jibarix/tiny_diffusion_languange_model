@@ -171,6 +171,9 @@ class ProjectConfig:
             'n_heads': 4,
             'vocab_size': 5000,
         })
+
+        # Recalculate head_dim after changing d_model and n_heads
+        config.model['head_dim'] = config.model['d_model'] // config.model['n_heads']
         
         # Fast training
         config.training.update({

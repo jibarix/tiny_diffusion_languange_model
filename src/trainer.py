@@ -147,8 +147,13 @@ class CurriculumTrainer:
     
     def _create_model(self) -> MaskedDiffusionLM:
         """Create and initialize model"""
-        from .model import create_model_from_config
-        
+        try:
+            from src.model import create_model_from_config
+            print("✓ Import successful")
+        except ImportError as e:
+            print(f"✗ Import failed: {e}")
+            return None
+
         # Update config with tokenizer info
         model_config = self.config['model'].copy()
         if self.data_pipeline.tokenizer:
@@ -929,3 +934,140 @@ def estimate_training_time(config: Dict[str, Any], data_pipeline: DataPipeline) 
     print(f"  Total: {total_time:.1f}h")
     
     return estimates
+
+# Add these functions to the end of src/trainer.py
+
+def test_trainer(config: Dict[str, Any], data_pipeline, max_steps: int = 10):
+    """
+    Test trainer functionality for debugging.
+    
+    Verifies trainer creation, stage setup, and basic forward pass.
+    """
+    print("Testing trainer functionality...")
+    
+    try:
+        # Create trainer
+        trainer = create_trainer_from_config(config, data_pipeline, device='cpu')
+        print(f"[OK] Trainer created successfully")
+        print(f"Device: {trainer.device}")
+        print(f"Stages: {len(trainer.stages)}")
+        
+        # Test stage setup
+        trainer._setup_stage(0)
+        print("[OK] Stage 0 setup successful!")
+        
+        # Test data loader creation
+        train_loader, val_loader = data_pipeline.create_dataloaders('foundational', batch_size=2)
+        print(f"[OK] Data loaders created: {len(train_loader)} train, {len(val_loader)} val batches")
+        
+        # Test single training step
+        trainer.model.train()
+        for batch in train_loader:
+            print("Testing single forward pass...")
+            
+            input_ids = batch['input_ids']
+            attention_mask = batch['attention_mask']
+            labels = batch['labels']
+            
+            outputs = trainer.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+            
+            loss = outputs['loss']
+            print(f"[OK] Forward pass successful! Loss: {loss.item():.4f}")
+            break
+        
+        print("[OK] Trainer test complete!")
+        
+    except Exception as e:
+        print(f"[FAILED] Trainer test failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def quick_training_test(config: Dict[str, Any], data_pipeline, max_steps: int = 10):
+    """
+    Quick training test for debugging and validation.
+    
+    Runs a few training steps to verify the pipeline works correctly.
+    """
+    print(f"Running quick training test ({max_steps} steps)...")
+    
+    trainer = create_trainer_from_config(config, data_pipeline, device='cpu')
+    
+    # Setup first stage
+    trainer._setup_stage(0)
+    
+    # Create data loaders
+    train_loader, val_loader = data_pipeline.create_dataloaders(
+        trainer.current_stage['name'], 
+        batch_size=config.get('training', {}).get('batch_size', 4)
+    )
+    
+    # Run a few training steps
+    trainer.model.train()
+    step_count = 0
+    
+    for batch in train_loader:
+        if step_count >= max_steps:
+            break
+            
+        # Move to device
+        input_ids = batch['input_ids'].to(trainer.device)
+        attention_mask = batch['attention_mask'].to(trainer.device)
+        labels = batch['labels'].to(trainer.device)
+        
+        # Forward pass
+        trainer.optimizer.zero_grad()
+        outputs = trainer.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+        loss = outputs['loss']
+        
+        # Backward pass
+        loss.backward()
+        trainer.optimizer.step()
+        
+        print(f"Step {step_count + 1}: Loss = {loss.item():.4f}")
+        step_count += 1
+    
+    # Quick evaluation
+    val_loss, val_perplexity = trainer._evaluate_stage(val_loader)
+    print(f"Validation: Loss = {val_loss:.4f}, Perplexity = {val_perplexity:.2f}")
+    
+    print("[OK] Quick training test completed successfully!")
+
+
+def estimate_training_time(config: Dict[str, Any], data_pipeline):
+    """
+    Estimate total training time based on configuration and data.
+    """
+    print("Estimating training time...")
+    
+    # Get data sizes
+    total_segments = len(data_pipeline.segments) if hasattr(data_pipeline, 'segments') else 1000
+    batch_size = config.get('training', {}).get('batch_size', 32)
+    
+    # Calculate steps per stage
+    stages = config.get('curriculum', {}).get('stages', [])
+    total_epochs = sum(stage.get('epochs', 50) for stage in stages)
+    
+    steps_per_epoch = max(1, total_segments // batch_size)
+    total_steps = total_epochs * steps_per_epoch
+    
+    # Estimate time per step (varies by hardware)
+    estimated_seconds_per_step = 0.1  # Conservative estimate for CPU testing
+    if torch.cuda.is_available():
+        estimated_seconds_per_step = 0.05  # Faster with GPU
+    
+    total_time_hours = (total_steps * estimated_seconds_per_step) / 3600
+    
+    print(f"Training estimate:")
+    print(f"  Total segments: {total_segments:,}")
+    print(f"  Total epochs: {total_epochs}")
+    print(f"  Total steps: {total_steps:,}")
+    print(f"  Estimated time: {total_time_hours:.1f} hours")
