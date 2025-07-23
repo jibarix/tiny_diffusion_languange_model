@@ -64,23 +64,26 @@ def load_data(data_dir: str, val_split: float = 0.1):
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(data_path / "tokenizer")
     
-    # Create validation split from all data
+    # Create validation split from all data (take from end to avoid bias)
     all_segments = curriculum_splits['all']
     random.shuffle(all_segments)
     
     val_size = int(len(all_segments) * val_split)
     val_data = all_segments[:val_size]
+    train_all = all_segments[val_size:]
     
-    # Remove validation data from training splits
-    train_indices = set(range(val_size, len(all_segments)))
+    # Create training splits
+    train_splits = {'all': train_all}
     
-    train_splits = {}
-    for split_name, segments in curriculum_splits.items():
-        if split_name != 'all':
-            # Keep only segments not in validation
-            filtered_segments = [seg for i, seg in enumerate(segments) 
-                               if (i + val_size) in train_indices or i >= val_size]
-            train_splits[split_name] = filtered_segments
+    # For other splits, recreate them from the filtered training data
+    sorted_train = sorted(train_all, key=lambda x: x.combined_difficulty)
+    n_train = len(sorted_train)
+    easy_end = n_train // 3
+    medium_end = 2 * n_train // 3
+    
+    train_splits['easy'] = sorted_train[:easy_end]
+    train_splits['medium'] = sorted_train[easy_end:medium_end]
+    train_splits['hard'] = sorted_train[medium_end:]
     
     return train_splits, val_data, tokenizer
 
@@ -118,41 +121,38 @@ def main():
     
     # Check CUDA availability
     if torch.cuda.is_available():
-        print(f"🔥 Using GPU: {torch.cuda.get_device_name(0)}")
-        print(f"   VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
+        device = torch.device("cuda")
+        print(f"🔥 Using GPU: {torch.cuda.get_device_name()}")
     else:
-        print("⚠️  No GPU available, using CPU")
+        device = torch.device("cpu")
+        print("💻 Using CPU")
     
     # Load data
-    print("📚 Loading training data...")
-    train_data, val_data, tokenizer = load_data(args.data_dir, config.training.val_split)
+    print("📚 Loading data...")
+    train_splits, val_data, tokenizer = load_data(args.data_dir)
     
-    print(f"Training splits:")
-    for split_name, segments in train_data.items():
-        print(f"  {split_name}: {len(segments)} examples")
-    print(f"Validation: {len(val_data)} examples")
+    print(f"✅ Data loaded:")
+    for split_name, segments in train_splits.items():
+        print(f"  - {split_name}: {len(segments)} segments")
+    print(f"  - validation: {len(val_data)} segments")
     
     # Create model
-    print("🏗️  Creating model...")
+    print("🏗️ Creating model...")
     model = create_model(config, tokenizer)
+    model.to(device)
     
-    # Create scheduler
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"📊 Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    
+    # Create curriculum scheduler
     curriculum_scheduler = CurriculumScheduler(config.curriculum)
-    
-    # Print curriculum summary
-    summary = curriculum_scheduler.get_stage_summary()
-    print(f"\n📋 Curriculum Summary:")
-    print(f"Stages: {summary['total_stages']}, Total epochs: {summary['total_epochs']}")
-    for stage_info in summary['stages']:
-        print(f"  Stage {stage_info['index'] + 1}: {stage_info['name']}")
-        print(f"    Epochs: {stage_info['epochs']}, Masking: {stage_info['masking_range']}")
-        print(f"    Data: {stage_info['data_selection']}, Format: {stage_info['format_type']}")
     
     # Create trainer
     trainer = CurriculumTrainer(
         model=model,
         curriculum_scheduler=curriculum_scheduler,
-        train_data=train_data,
+        train_data=train_splits,
         val_data=val_data,
         tokenizer=tokenizer,
         config=config,
@@ -161,35 +161,14 @@ def main():
     
     # Resume from checkpoint if specified
     if args.resume:
-        print(f"📂 Resuming from checkpoint: {args.resume}")
+        print(f"🔄 Resuming from checkpoint: {args.resume}")
         trainer.load_checkpoint(args.resume)
     
-    # Save configuration
-    config.save_yaml(output_dir / "config.yaml")
-    print(f"💾 Configuration saved to: {output_dir / 'config.yaml'}")
-    
     # Start training
-    try:
-        trainer.train()
-        print("✅ Training completed successfully!")
-        
-        # Print final summary
-        summary = trainer.metrics.get_progress_summary()
-        print(f"\n📊 Final Results:")
-        print(f"Best validation loss: {summary['best_val_loss']:.4f}")
-        print(f"Best validation perplexity: {summary['best_val_perplexity']:.2f}")
-        print(f"Total training time: {summary['total_time'] / 3600:.1f} hours")
-        
-    except KeyboardInterrupt:
-        print("\n⚠️  Training interrupted by user")
-        trainer.save_checkpoint()
-        print("💾 Current state saved")
-        
-    except Exception as e:
-        print(f"\n❌ Training failed: {e}")
-        trainer.save_checkpoint()
-        print("💾 Emergency checkpoint saved")
-        raise
+    print("🎯 Starting curriculum training...")
+    trainer.train()
+    
+    print("✅ Training completed!")
 
 
 if __name__ == "__main__":

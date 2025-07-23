@@ -18,7 +18,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .scheduler import CurriculumScheduler
 from .metrics import TrainingMetrics
-from ..model.diffusion import MaskedDiffusionLM
+from model.diffusion import MaskedDiffusionLM
+
 
 
 class TextDataset(Dataset):
