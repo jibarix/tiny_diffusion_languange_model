@@ -10,9 +10,10 @@ from pathlib import Path
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
+sys.path.append(str(Path(__file__).parent.parent))  # Add project root
 
 from data.pipeline import TextDataPipeline
-from config import PipelineConfig
+from config.pipeline_config import PipelineConfig
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare text data for curriculum training")
@@ -35,16 +36,15 @@ def main():
     
     # Load pipeline config
     pipeline_config = PipelineConfig.default()
-    if args.config:
-        # Could implement config file loading for pipeline
-        pass
     
     # Initialize pipeline with config
     pipeline = TextDataPipeline(
         pipeline_config=pipeline_config,
-        target_vocab_size=args.vocab_size if hasattr(args, 'vocab_size') else 25000,
+        target_vocab_size=args.vocab_size,
+        n_clusters=args.clusters,
+        embedding_model=args.embedding_model,
         enable_argument_mining=True,
-        enable_vocab_curriculum=False
+        enable_vocab_curriculum=False  # Disable to avoid issues
     )
     
     # Process text file
@@ -60,13 +60,15 @@ def main():
         print(f"\n📊 Statistics:")
         print(f"   Segments: {len(segments)}")
         print(f"   Avg difficulty: {sum(difficulties)/len(difficulties):.3f}")
-        print(f"   Vocab size: {pipeline.tokenizer.vocab_size if pipeline.tokenizer else 'N/A'}")
+        print(f"   Vocab size: {len(pipeline.tokenizer) if pipeline.tokenizer else 'N/A'}")
         print(f"   Clusters: {args.clusters}")
         
         print(f"\n🎯 Data ready for curriculum training!")
         
     except Exception as e:
         print(f"❌ Error processing data: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
