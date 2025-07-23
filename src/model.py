@@ -35,7 +35,7 @@ class RMSNorm(nn.Module):
 
 
 class RotaryPositionalEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE) - CUDA Safe Version"""
+    """Rotary Position Embedding (RoPE) - Production Implementation"""
     
     def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 10000.0):
         super().__init__()
@@ -43,62 +43,84 @@ class RotaryPositionalEmbedding(nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.base = base
 
-        # Precompute frequency tensor - ensure even dimension
+        # Precompute frequency tensor
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
+        
+        # Cache for efficiency
+        self._seq_len_cached = 0
+        self._cos_cached = None
+        self._sin_cached = None
+
+    def _update_cos_sin_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype):
+        """Update cos/sin cache if needed"""
+        if seq_len > self._seq_len_cached or self._cos_cached is None or self._cos_cached.device != device:
+            # Limit to max_position_embeddings
+            seq_len = min(seq_len, self.max_position_embeddings)
+            
+            self._seq_len_cached = seq_len
+            t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+            freqs = torch.outer(t, self.inv_freq.to(device))
+            
+            # Create embeddings [seq_len, dim//2]
+            cos = freqs.cos().to(dtype)
+            sin = freqs.sin().to(dtype)
+            
+            self._cos_cached = cos
+            self._sin_cached = sin
 
     def forward(self, x: torch.Tensor, seq_len: Optional[int] = None):
-        # x: [batch_size, num_heads, seq_len, head_dim]
+        # x shape: [batch_size, num_heads, seq_len, head_dim]
+        batch_size, num_heads, x_seq_len, head_dim = x.shape
+        
         if seq_len is None:
-            seq_len = x.shape[-2]
+            seq_len = x_seq_len
         
-        # Clamp sequence length to prevent index errors
-        seq_len = min(seq_len, self.max_position_embeddings)
-        
-        # Generate position encodings
-        t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
-        freqs = torch.outer(t, self.inv_freq)
-        
-        # Create cos and sin embeddings with proper dimensions
-        cos = freqs.cos().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
-        sin = freqs.sin().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
+        # Ensure we don't exceed limits
+        seq_len = min(seq_len, x_seq_len, self.max_position_embeddings)
         
         # Truncate input if needed
-        if x.size(-2) > seq_len:
+        if x_seq_len > seq_len:
             x = x[:, :, :seq_len, :]
         
-        # Apply rotary embedding
-        return self._apply_rotary_pos_emb(x, cos, sin)
-    
-    def _apply_rotary_pos_emb(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-        # Ensure head_dim is even for proper splitting
-        head_dim = x.size(-1)
-        if head_dim % 2 != 0:
-            # Pad to make even if necessary
-            x = F.pad(x, (0, 1))
-            head_dim += 1
+        # Update cache
+        self._update_cos_sin_cache(seq_len, x.device, x.dtype)
         
-        # Split x into two halves along the head dimension
-        x1, x2 = x.chunk(2, dim=-1)
-        
-        # Ensure cos/sin match x sequence dimension
-        seq_len_x = x.size(-2)
-        if cos.size(-2) != seq_len_x:
-            cos = cos[:, :, :seq_len_x, :]
-            sin = sin[:, :, :seq_len_x, :]
-        
-        # Expand cos/sin to match x dimensions
-        cos = cos.expand_as(x1)  # [batch_size, num_heads, seq_len, head_dim//2]
-        sin = sin.expand_as(x1)  # [batch_size, num_heads, seq_len, head_dim//2]
+        # Get cached values
+        cos = self._cos_cached[:seq_len]  # [seq_len, dim//2]
+        sin = self._sin_cached[:seq_len]  # [seq_len, dim//2]
         
         # Apply rotation
-        rotated = torch.cat([
-            x1 * cos - x2 * sin,
-            x1 * sin + x2 * cos
-        ], dim=-1)
+        return self._apply_rotary_emb(x, cos, sin)
+    
+    def _apply_rotary_emb(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+        """Apply rotary embedding to input tensor"""
+        # x: [batch_size, num_heads, seq_len, head_dim]
+        # cos, sin: [seq_len, head_dim//2]
+        
+        # Handle odd dimensions
+        if x.size(-1) % 2 != 0:
+            # Pad last dimension to make even
+            x = F.pad(x, (0, 1))
+        
+        # Reshape for rotation: split into pairs
+        x_reshaped = x.view(*x.shape[:-1], -1, 2)  # [..., head_dim//2, 2]
+        x1, x2 = x_reshaped.unbind(dim=-1)  # [..., head_dim//2]
+        
+        # Expand cos/sin to match input dimensions
+        cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim//2]
+        sin = sin.unsqueeze(0).unsqueeze(0)
+        
+        # Apply rotation
+        rotated_x1 = x1 * cos - x2 * sin
+        rotated_x2 = x1 * sin + x2 * cos
+        
+        # Recombine
+        rotated = torch.stack([rotated_x1, rotated_x2], dim=-1)
+        rotated = rotated.view(*x.shape[:-1], -1)  # Back to original shape
         
         # Remove padding if it was added
-        if x.size(-1) != rotated.size(-1):
+        if rotated.size(-1) > x.size(-1):
             rotated = rotated[..., :x.size(-1)]
         
         return rotated
@@ -356,112 +378,119 @@ class MaskedDiffusionLM(nn.Module):
         self.lm_head = new_embeddings
     
     def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ):
-        use_cache = use_cache if use_cache is not None else self.config.get('use_cache', False)
-        return_dict = return_dict if return_dict is not None else True
-        
-        # Input validation
-        if input_ids is None:
-            raise ValueError("input_ids cannot be None")
-        
-        batch_size, seq_length = input_ids.shape
-        
-        # Create attention mask if not provided
-        if attention_mask is None:
-            attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long, device=input_ids.device)
-        
-        # Input embeddings
-        hidden_states = self.embed_tokens(input_ids)
-        
-        # Prepare for caching
-        if use_cache:
-            use_cache = True
-            if past_key_values is None:
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+        ):
+            use_cache = use_cache if use_cache is not None else self.config.get('use_cache', False)
+            return_dict = return_dict if return_dict is not None else True
+            
+            # Input validation
+            if input_ids is None:
+                raise ValueError("input_ids cannot be None")
+            
+            batch_size, seq_length = input_ids.shape
+            
+            # Clamp input_ids to valid vocabulary range
+            input_ids = torch.clamp(input_ids, 0, self.vocab_size - 1)
+            
+            # Create attention mask if not provided
+            if attention_mask is None:
+                attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long, device=input_ids.device)
+            
+            # Input embeddings
+            hidden_states = self.embed_tokens(input_ids)
+            
+            # Prepare for caching
+            if use_cache:
+                use_cache = True
+                if past_key_values is None:
+                    past_key_values = [None] * len(self.layers)
+            else:
                 past_key_values = [None] * len(self.layers)
-        else:
-            past_key_values = [None] * len(self.layers)
-        
-        # Forward through transformer layers
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attentions = () if output_attentions else None
-        next_decoder_cache = () if use_cache else None
-        
-        for idx, (decoder_layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
+            
+            # Forward through transformer layers
+            all_hidden_states = () if output_hidden_states else None
+            all_self_attentions = () if output_attentions else None
+            next_decoder_cache = () if use_cache else None
+            
+            for idx, (decoder_layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                
+                if self.gradient_checkpointing and self.training:
+                    # Gradient checkpointing
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs, use_cache=False)
+                        return custom_forward
+                    
+                    layer_outputs = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(decoder_layer),
+                        hidden_states,
+                        attention_mask,
+                        None,  # past_key_value
+                    )
+                else:
+                    layer_outputs = decoder_layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        past_key_value=past_key_value,
+                        use_cache=use_cache,
+                    )
+                
+                hidden_states = layer_outputs[0]
+                
+                if use_cache:
+                    next_decoder_cache += (layer_outputs[1],)
+                
+                if output_attentions:
+                    all_self_attentions += (layer_outputs[1],)
+            
+            # Final layer norm
+            hidden_states = self.norm(hidden_states)
+            
+            # Add hidden states from the last decoder layer
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             
-            if self.gradient_checkpointing and self.training:
-                # Gradient checkpointing
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs, use_cache=False)
-                    return custom_forward
+            # Compute logits
+            logits = self.lm_head(hidden_states)
+            
+            # Compute loss if labels provided
+            loss = None
+            if labels is not None:
+                # Flatten for cross-entropy
+                shift_logits = logits.view(-1, self.vocab_size)
+                shift_labels = labels.view(-1)
                 
-                layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(decoder_layer),
-                    hidden_states,
-                    attention_mask,
-                    None,  # past_key_value
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    past_key_value=past_key_value,
-                    use_cache=use_cache,
-                )
+                # Clamp labels to valid range and set invalid tokens to ignore_index
+                valid_mask = (shift_labels >= 0) & (shift_labels < self.vocab_size)
+                shift_labels = torch.where(valid_mask, shift_labels, -100)
+                
+                # Compute loss only on non-ignored positions (labels != -100)
+                loss_fct = CrossEntropyLoss(ignore_index=-100)
+                loss = loss_fct(shift_logits, shift_labels)
             
-            hidden_states = layer_outputs[0]
+            if not return_dict:
+                output = (logits,)
+                if loss is not None:
+                    output = (loss,) + output
+                return output + (hidden_states, all_self_attentions, all_hidden_states)
             
-            if use_cache:
-                next_decoder_cache += (layer_outputs[1],)
-            
-            if output_attentions:
-                all_self_attentions += (layer_outputs[1],)
-        
-        # Final layer norm
-        hidden_states = self.norm(hidden_states)
-        
-        # Add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-        
-        # Compute logits
-        logits = self.lm_head(hidden_states)
-        
-        # Compute loss if labels provided
-        loss = None
-        if labels is not None:
-            # Flatten for cross-entropy
-            shift_logits = logits.view(-1, self.vocab_size)
-            shift_labels = labels.view(-1)
-            
-            # Compute loss only on non-ignored positions (labels != -100)
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(shift_logits, shift_labels)
-        
-        if not return_dict:
-            output = (logits,)
-            if loss is not None:
-                output = (loss,) + output
-            return output + (hidden_states, all_self_attentions, all_hidden_states)
-        
-        return {
-            'loss': loss,
-            'logits': logits,
-            'past_key_values': next_decoder_cache,
-            'hidden_states': all_hidden_states,
-            'attentions': all_self_attentions,
-        }
+            return {
+                'loss': loss,
+                'logits': logits,
+                'past_key_values': next_decoder_cache,
+                'hidden_states': all_hidden_states,
+                'attentions': all_self_attentions,
+            }
     
     def generate_step(
         self,

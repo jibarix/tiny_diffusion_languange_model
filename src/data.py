@@ -449,14 +449,19 @@ class CompressedTokenizer:
         # Tokenize with base tokenizer
         tokens = self.base_tokenizer.tokenize(text)
         
-        # Map to compressed vocab
+        # Map to compressed vocab with bounds checking
         token_ids = []
+        unk_id = self.compressed_vocab.get('[UNK]', 0)  # Fallback to 0 if no UNK
+        
         for token in tokens:
             if token in self.compressed_vocab:
-                token_ids.append(self.compressed_vocab[token])
+                token_id = self.compressed_vocab[token]
+                # Ensure token_id is within vocab bounds
+                if 0 <= token_id < len(self.compressed_vocab):
+                    token_ids.append(token_id)
+                else:
+                    token_ids.append(unk_id)
             else:
-                # Use a special unknown token or skip
-                unk_id = self.compressed_vocab.get('[UNK]', self.compressed_vocab.get('[MASK]', 0))
                 token_ids.append(unk_id)
         
         return token_ids
