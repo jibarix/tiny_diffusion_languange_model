@@ -1,6 +1,6 @@
 """
-Curriculum Scheduler
-Handles stage transitions and masking rate scheduling
+Curriculum Scheduler - FIXED CONFIG INTEGRATION
+All hardcoded values moved to configuration
 """
 
 import numpy as np
@@ -9,11 +9,21 @@ from dataclasses import dataclass
 
 
 class CurriculumScheduler:
-    """Manages curriculum learning schedule and transitions"""
+    """Manages curriculum learning schedule and transitions - FIXED VERSION"""
     
-    def __init__(self, curriculum_config):
+    def __init__(self, curriculum_config, training_config=None):
         self.config = curriculum_config
+        self.training_config = training_config
         self.stages = curriculum_config.stages
+        
+        # FIXED: Get parameters from config instead of hardcoding
+        if training_config:
+            self.adaptation_window = getattr(training_config, 'adaptation_window', 10)
+            self.improvement_threshold = getattr(training_config, 'improvement_threshold', 0.01)
+        else:
+            # Fallback defaults if no training config provided
+            self.adaptation_window = 10
+            self.improvement_threshold = 0.01
         
         # Calculate cumulative epoch boundaries
         self.stage_boundaries = []
@@ -64,51 +74,29 @@ class CurriculumScheduler:
             if epoch == boundary:
                 return True
         return False
-    
-    def get_transition_schedule(self, from_stage: int, to_stage: int, 
-                             transition_epochs: int) -> List[float]:
-        """Get gradual transition schedule between stages"""
-        if transition_epochs <= 1:
-            return [1.0]  # Immediate transition
-        
-        # Linear transition
-        weights = np.linspace(0.0, 1.0, transition_epochs)
-        return weights.tolist()
-    
-    def get_stage_summary(self) -> Dict:
-        """Get summary of curriculum stages"""
-        summary = {
-            'total_stages': len(self.stages),
-            'total_epochs': sum(stage.epochs for stage in self.stages),
-            'stages': []
-        }
-        
-        cumulative = 0
-        for i, stage in enumerate(self.stages):
-            stage_info = {
-                'index': i,
-                'name': stage.name,
-                'epochs': stage.epochs,
-                'epoch_range': (cumulative, cumulative + stage.epochs),
-                'masking_range': stage.masking_rate_range,
-                'data_selection': stage.data_selection,
-                'format_type': stage.format_type
-            }
-            summary['stages'].append(stage_info)
-            cumulative += stage.epochs
-        
-        return summary
 
 
 class AdaptiveScheduler:
-    """Adaptive curriculum scheduler based on model performance"""
+    """Adaptive curriculum scheduler - FIXED CONFIG VERSION"""
     
     def __init__(self, base_scheduler: CurriculumScheduler, 
-                 adaptation_window: int = 10,
-                 improvement_threshold: float = 0.01):
+                 training_config=None):
         self.base_scheduler = base_scheduler
-        self.adaptation_window = adaptation_window
-        self.improvement_threshold = improvement_threshold
+        
+        # FIXED: Get all parameters from config
+        if training_config:
+            self.adaptation_window = getattr(training_config, 'adaptation_window', 10)
+            self.improvement_threshold = getattr(training_config, 'improvement_threshold', 0.01)
+            self.min_epochs_per_stage = getattr(training_config, 'min_epochs_per_stage', 5)
+            self.max_epochs_per_stage = getattr(training_config, 'max_epochs_per_stage', 200)
+            self.performance_plateau_epochs = getattr(training_config, 'performance_plateau_epochs', 10)
+        else:
+            # Fallback defaults
+            self.adaptation_window = 10
+            self.improvement_threshold = 0.01
+            self.min_epochs_per_stage = 5
+            self.max_epochs_per_stage = 200
+            self.performance_plateau_epochs = 10
         
         # Track performance history
         self.loss_history = []
@@ -124,6 +112,9 @@ class AdaptiveScheduler:
     
     def should_extend_stage(self, epoch: int) -> bool:
         """Check if current stage should be extended"""
+        if epoch < self.min_epochs_per_stage:
+            return False
+            
         if len(self.loss_history) < self.adaptation_window:
             return False
         
@@ -144,54 +135,24 @@ class AdaptiveScheduler:
         
         # Extend stage if still improving significantly
         return improvement > self.improvement_threshold
-    
-    def get_adapted_masking_rate(self, epoch: int, base_rate: float, 
-                                performance_trend: str = "stable") -> float:
-        """Adapt masking rate based on performance"""
-        
-        if performance_trend == "improving":
-            # Slightly increase difficulty (lower masking rate)
-            return max(0.05, base_rate * 0.95)
-        elif performance_trend == "struggling":
-            # Make it easier (higher masking rate)
-            return min(0.95, base_rate * 1.05)
-        else:
-            # Keep base rate
-            return base_rate
-    
-    def analyze_performance_trend(self, window: int = 5) -> str:
-        """Analyze recent performance trend"""
-        if len(self.loss_history) < window:
-            return "insufficient_data"
-        
-        recent_losses = [loss for _, loss in self.loss_history[-window:]]
-        
-        # Simple trend analysis
-        if len(recent_losses) < 2:
-            return "stable"
-        
-        # Calculate slope
-        x = np.arange(len(recent_losses))
-        y = np.array(recent_losses)
-        
-        if len(x) > 1:
-            slope = np.polyfit(x, y, 1)[0]
-            
-            if slope < -0.01:  # Decreasing loss (improving)
-                return "improving"
-            elif slope > 0.01:  # Increasing loss (struggling)
-                return "struggling"
-        
-        return "stable"
 
 
+# FIXED: Add missing imports and configuration support
 class MaskingStrategies:
-    """Different masking strategies for diffusion training"""
+    """Different masking strategies with configurable parameters"""
+    
+    def __init__(self, config=None):
+        # FIXED: Accept config for strategy parameters
+        self.config = config
+        self.default_span_length = getattr(config, 'masking_span_length', 3.0) if config else 3.0
+        self.difficulty_temperature = getattr(config, 'difficulty_temperature', 1.0) if config else 1.0
     
     @staticmethod
     def uniform_random(input_ids: 'torch.Tensor', masking_rate: float, 
                       mask_token_id: int, pad_token_id: int) -> 'torch.Tensor':
         """Standard uniform random masking"""
+        import torch
+        
         batch_size, seq_len = input_ids.shape
         
         # Don't mask padding tokens
@@ -209,11 +170,9 @@ class MaskingStrategies:
         
         return masked_input, final_mask
     
-    @staticmethod
-    def span_masking(input_ids: 'torch.Tensor', masking_rate: float,
-                    mask_token_id: int, pad_token_id: int,
-                    span_length_mean: float = 3.0) -> 'torch.Tensor':
-        """Mask contiguous spans (like SpanBERT)"""
+    def span_masking(self, input_ids: 'torch.Tensor', masking_rate: float,
+                    mask_token_id: int, pad_token_id: int) -> 'torch.Tensor':
+        """Mask contiguous spans with configurable length"""
         import torch
         
         batch_size, seq_len = input_ids.shape
@@ -228,15 +187,15 @@ class MaskingStrategies:
             n_valid = len(valid_positions)
             n_mask = int(n_valid * masking_rate)
             
-            # Generate spans
+            # Generate spans with configurable length
             masked_positions = set()
             while len(masked_positions) < n_mask:
                 # Sample span start
                 start_idx = torch.randint(0, n_valid, (1,)).item()
                 start_pos = valid_positions[start_idx].item()
                 
-                # Sample span length (geometric distribution)
-                span_length = max(1, int(torch.poisson(torch.tensor(span_length_mean - 1)).item()) + 1)
+                # Sample span length using configured parameter
+                span_length = max(1, int(torch.poisson(torch.tensor(self.default_span_length - 1)).item()) + 1)
                 
                 # Add span positions
                 for j in range(span_length):
@@ -251,46 +210,5 @@ class MaskingStrategies:
             for pos in masked_positions:
                 masked_input[i, pos] = mask_token_id
                 mask[i, pos] = True
-        
-        return masked_input, mask
-    
-    @staticmethod
-    def difficulty_aware_masking(input_ids: 'torch.Tensor', masking_rate: float,
-                               mask_token_id: int, pad_token_id: int,
-                               token_difficulties: Optional['torch.Tensor'] = None) -> 'torch.Tensor':
-        """Mask tokens based on difficulty scores"""
-        import torch
-        
-        if token_difficulties is None:
-            # Fall back to uniform random
-            return MaskingStrategies.uniform_random(
-                input_ids, masking_rate, mask_token_id, pad_token_id
-            )
-        
-        batch_size, seq_len = input_ids.shape
-        masked_input = input_ids.clone()
-        mask = torch.zeros_like(input_ids, dtype=torch.bool)
-        
-        for i in range(batch_size):
-            valid_positions = (input_ids[i] != pad_token_id).nonzero(as_tuple=True)[0]
-            if len(valid_positions) == 0:
-                continue
-            
-            n_valid = len(valid_positions)
-            n_mask = int(n_valid * masking_rate)
-            
-            # Get difficulties for valid positions
-            valid_difficulties = token_difficulties[i, valid_positions]
-            
-            # Sample based on difficulty (higher difficulty = higher probability)
-            probabilities = torch.softmax(valid_difficulties, dim=0)
-            
-            # Sample positions without replacement
-            sampled_indices = torch.multinomial(probabilities, n_mask, replacement=False)
-            sampled_positions = valid_positions[sampled_indices]
-            
-            # Apply masking
-            masked_input[i, sampled_positions] = mask_token_id
-            mask[i, sampled_positions] = True
         
         return masked_input, mask
