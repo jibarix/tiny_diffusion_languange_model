@@ -35,7 +35,7 @@ class RMSNorm(nn.Module):
 
 
 class RotaryPositionalEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE) - Fixed Version"""
+    """Rotary Position Embedding (RoPE) - CUDA Safe Version"""
     
     def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 10000.0):
         super().__init__()
@@ -52,6 +52,9 @@ class RotaryPositionalEmbedding(nn.Module):
         if seq_len is None:
             seq_len = x.shape[-2]
         
+        # Clamp sequence length to prevent index errors
+        seq_len = min(seq_len, self.max_position_embeddings)
+        
         # Generate position encodings
         t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
         freqs = torch.outer(t, self.inv_freq)
@@ -59,6 +62,10 @@ class RotaryPositionalEmbedding(nn.Module):
         # Create cos and sin embeddings with proper dimensions
         cos = freqs.cos().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
         sin = freqs.sin().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
+        
+        # Truncate input if needed
+        if x.size(-2) > seq_len:
+            x = x[:, :, :seq_len, :]
         
         # Apply rotary embedding
         return self._apply_rotary_pos_emb(x, cos, sin)
@@ -73,6 +80,12 @@ class RotaryPositionalEmbedding(nn.Module):
         
         # Split x into two halves along the head dimension
         x1, x2 = x.chunk(2, dim=-1)
+        
+        # Ensure cos/sin match x sequence dimension
+        seq_len_x = x.size(-2)
+        if cos.size(-2) != seq_len_x:
+            cos = cos[:, :, :seq_len_x, :]
+            sin = sin[:, :, :seq_len_x, :]
         
         # Expand cos/sin to match x dimensions
         cos = cos.expand_as(x1)  # [batch_size, num_heads, seq_len, head_dim//2]
