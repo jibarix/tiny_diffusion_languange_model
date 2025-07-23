@@ -219,7 +219,8 @@ class EnhancedCurriculumTrainer:
         
     def load_stage_tokenizers(self):
         """Load tokenizers for different vocabulary levels"""
-        data_dir = Path(self.pipeline.segments[0].__dict__.get('data_dir', 'data/processed'))
+        # Try to infer data directory from config or use default
+        data_dir = Path(getattr(self.config, 'data_dir', 'data/processed'))
         
         # Try to load level-specific tokenizers
         for level in range(1, 6):  # Vocab levels 1-5
@@ -227,9 +228,79 @@ class EnhancedCurriculumTrainer:
             if tokenizer_path.exists():
                 from transformers import AutoTokenizer
                 self.tokenizers[level] = AutoTokenizer.from_pretrained(tokenizer_path)
+                print(f"Loaded tokenizer level {level}: {len(self.tokenizers[level]):,} tokens")
             else:
                 # Fall back to standard tokenizer
-                self.tokenizers[level] = self.pipeline.tokenizer or self.create_default_tokenizer()
+                fallback_tokenizer = self.pipeline.tokenizer or self.create_default_tokenizer()
+                self.tokenizers[level] = fallback_tokenizer
+                print(f"Using fallback tokenizer for level {level}: {len(fallback_tokenizer):,} tokens")
+
+    def validate_model_vocab_compatibility(self, tokenizer, stage: int, vocab_level: int):
+        """Ensure model vocab size matches tokenizer"""
+        model_vocab_size = self.model.vocab_size
+        tokenizer_vocab_size = len(tokenizer)
+        
+        if model_vocab_size != tokenizer_vocab_size:
+            self.logger.warning(
+                f"Stage {stage}, Vocab {vocab_level}: Model vocab size ({model_vocab_size:,}) != "
+                f"Tokenizer vocab size ({tokenizer_vocab_size:,})"
+            )
+            
+            # If model is smaller, we need to adjust the model
+            if model_vocab_size < tokenizer_vocab_size:
+                self.logger.info(f"Expanding model vocabulary from {model_vocab_size} to {tokenizer_vocab_size}")
+                self._expand_model_vocabulary(tokenizer_vocab_size)
+            else:
+                self.logger.warning("Model vocabulary larger than tokenizer - this may cause issues")
+
+    def _expand_model_vocabulary(self, new_vocab_size: int):
+        """Expand model vocabulary to match tokenizer"""
+        old_vocab_size = self.model.vocab_size
+        
+        # Expand token embedding layer
+        old_embeddings = self.model.transformer.token_embedding.weight.data
+        new_embeddings = torch.zeros(new_vocab_size, self.model.d_model, device=old_embeddings.device)
+        new_embeddings[:old_vocab_size] = old_embeddings
+        
+        # Initialize new embeddings with small random values
+        if new_vocab_size > old_vocab_size:
+            torch.nn.init.normal_(new_embeddings[old_vocab_size:], mean=0.0, std=0.02)
+        
+        # Replace embedding layer
+        self.model.transformer.token_embedding = torch.nn.Embedding(
+            new_vocab_size, self.model.d_model, 
+            padding_idx=self.model.pad_token_id
+        )
+        self.model.transformer.token_embedding.weight.data = new_embeddings
+        
+        # Expand output layer
+        old_lm_head = self.model.transformer.lm_head.weight.data
+        new_lm_head = torch.zeros(new_vocab_size, self.model.d_model, device=old_lm_head.device)
+        new_lm_head[:old_vocab_size] = old_lm_head
+        
+        if new_vocab_size > old_vocab_size:
+            torch.nn.init.normal_(new_lm_head[old_vocab_size:], mean=0.0, std=0.02)
+        
+        self.model.transformer.lm_head = torch.nn.Linear(
+            self.model.d_model, new_vocab_size, bias=False
+        )
+        self.model.transformer.lm_head.weight.data = new_lm_head
+        
+        # Update vocab size
+        self.model.vocab_size = new_vocab_size
+        
+        # Move to device
+        self.model.to(self.device)
+        
+        # Reinitialize optimizer to include new parameters
+        self._setup_optimizer()
+
+    def create_stage_dataloader(self, stage: int, vocab_level: int, batch_size: int) -> DataLoader:
+        """Create curriculum-aware dataloader for specific stage with fallback"""
+        tokenizer = self.tokenizers.get(vocab_level, self.tokenizers[1])
+        
+        # Validate model-tokenizer compatibility
+        self.validate_model_vocab_compatibility(tokenizer, stage, vocab_level)
     
     def create_default_tokenizer(self):
         """Create default tokenizer if none available"""

@@ -20,37 +20,39 @@ from model.diffusion import MaskedDiffusionLM
 from evaluation.generate import DiffusionGenerator
 
 
-def load_model_and_tokenizer(checkpoint_path: str, data_dir: str):
-    """Load trained model and tokenizer"""
+def load_model_and_tokenizer(checkpoint_path: str, data_dir: str, vocab_level: int = 5):
+    """Load trained model and tokenizer for specified vocab level"""
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     config = checkpoint['config']
     
+    # Load appropriate tokenizer level
+    tokenizer_path = Path(data_dir) / f"tokenizer_level_{vocab_level}"
+    if not tokenizer_path.exists():
+        print(f"Warning: tokenizer_level_{vocab_level} not found, falling back to level 1")
+        tokenizer_path = Path(data_dir) / "tokenizer_level_1"
+    
+    if not tokenizer_path.exists():
+        print("Warning: No level-specific tokenizer found, using standard tokenizer")
+        tokenizer_path = Path(data_dir) / "tokenizer"
+    
     # Load tokenizer
-    from transformers import GPT2Tokenizer
-    tokenizer = GPT2Tokenizer.from_pretrained(str(Path(data_dir) / "tokenizer_level_1"))
+    if tokenizer_path.exists():
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
+    else:
+        # Fallback to GPT-2 with special tokens
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
+                         "bos_token": "<bos>", "eos_token": "<eos>"}
+        tokens_to_add = {k: v for k, v in special_tokens.items() 
+                        if getattr(tokenizer, k) is None}
+        if tokens_to_add:
+            tokenizer.add_special_tokens(tokens_to_add)
     
-    # Create model
-    model = MaskedDiffusionLM(
-        vocab_size=len(tokenizer),
-        d_model=config.model.d_model,
-        n_layers=config.model.n_layers,
-        n_heads=config.model.n_heads,
-        d_ff=config.model.d_ff,
-        max_seq_len=config.model.max_seq_len,
-        dropout=config.model.dropout,
-        attention_dropout=config.model.attention_dropout,
-        use_bias=config.model.use_bias,
-        norm_eps=config.model.norm_eps,
-        pad_token_id=tokenizer.pad_token_id,
-        mask_token_id=tokenizer.mask_token_id
-    )
-    
-    # Load weights
-    model.load_state_dict(checkpoint['model_state_dict'])
-    
-    return model, tokenizer, config
+    print(f"Using vocab level {vocab_level}, tokenizer size: {len(tokenizer):,}")
 
 
 def main():
@@ -66,13 +68,14 @@ def main():
     parser.add_argument("--num-samples", type=int, default=3, help="Number of samples")
     parser.add_argument("--interactive", action="store_true", help="Interactive mode")
     parser.add_argument("--output", help="Save samples to file")
+    parser.add_argument("--vocab-level", type=int, default=5, help="Vocabulary level (1-5, higher = larger vocab)")
     
     args = parser.parse_args()
     
     print(f"Loading model from: {args.checkpoint}")
     
     # Load model
-    model, tokenizer, config = load_model_and_tokenizer(args.checkpoint, args.data_dir)
+    model, tokenizer, config = load_model_and_tokenizer(args.checkpoint, args.data_dir, args.vocab_level)
     
     # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -13,10 +13,11 @@ import time
 class DiffusionGenerator:
     """Text generation using masked diffusion model"""
     
-    def __init__(self, model, tokenizer, device='cuda'):
+    def __init__(self, model, tokenizer, device='cuda', vocab_level: int = 5):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.vocab_level = vocab_level
         
         self.model.eval()
         self.model.to(device)
@@ -26,6 +27,64 @@ class DiffusionGenerator:
         self.mask_token_id = tokenizer.mask_token_id
         self.bos_token_id = getattr(tokenizer, 'bos_token_id', None)
         self.eos_token_id = getattr(tokenizer, 'eos_token_id', None)
+
+        # Validate vocab size matches model
+        model_vocab_size = model.vocab_size
+        tokenizer_vocab_size = len(tokenizer)
+        if model_vocab_size != tokenizer_vocab_size:
+            print(f"Warning: Model vocab size ({model_vocab_size:,}) != "
+                  f"Tokenizer vocab size ({tokenizer_vocab_size:,})")
+            
+    @classmethod
+    def from_checkpoint(cls, checkpoint_path: str, data_dir: str, 
+                       vocab_level: int = 5, device: str = 'cuda'):
+        """Create generator from checkpoint with appropriate tokenizer"""
+        from pathlib import Path
+        import torch
+        from transformers import AutoTokenizer
+        
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        config = checkpoint['config']
+        
+        # Load appropriate tokenizer
+        tokenizer_path = Path(data_dir) / f"tokenizer_level_{vocab_level}"
+        if not tokenizer_path.exists():
+            tokenizer_path = Path(data_dir) / "tokenizer_level_1"
+        
+        if tokenizer_path.exists():
+            tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
+        else:
+            # Fallback
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
+                             "bos_token": "<bos>", "eos_token": "<eos>"}
+            tokens_to_add = {k: v for k, v in special_tokens.items() 
+                            if getattr(tokenizer, k) is None}
+            if tokens_to_add:
+                tokenizer.add_special_tokens(tokens_to_add)
+        
+        # Create model
+        from model.diffusion import MaskedDiffusionLM
+        model = MaskedDiffusionLM(
+            vocab_size=len(tokenizer),
+            d_model=config.model.d_model,
+            n_layers=config.model.n_layers,
+            n_heads=config.model.n_heads,
+            d_ff=config.model.d_ff,
+            max_seq_len=config.model.max_seq_len,
+            dropout=config.model.dropout,
+            attention_dropout=config.model.attention_dropout,
+            use_bias=config.model.use_bias,
+            norm_eps=config.model.norm_eps,
+            pad_token_id=tokenizer.pad_token_id,
+            mask_token_id=tokenizer.mask_token_id
+        )
+        
+        # Load weights
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        return cls(model, tokenizer, device, vocab_level)
     
     def generate(self,
                 prompt: str = "",

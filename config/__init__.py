@@ -11,7 +11,7 @@ import yaml
 from .model_config import ModelConfig
 from .training_config import TrainingConfig  
 from .curriculum_config import CurriculumConfig
-
+from .generation_config import GenerationConfig
 
 @dataclass
 class ProjectConfig:
@@ -19,6 +19,7 @@ class ProjectConfig:
     model: ModelConfig
     training: TrainingConfig
     curriculum: CurriculumConfig
+    generation: GenerationConfig
     
     # Project paths
     data_dir: str = "data"
@@ -61,7 +62,8 @@ class ProjectConfig:
         return cls(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.default(),
-            curriculum=CurriculumConfig.three_stage()
+            curriculum=CurriculumConfig.three_stage(),
+            generation=GenerationConfig.default()
         )
     
     def save_yaml(self, config_path: str):

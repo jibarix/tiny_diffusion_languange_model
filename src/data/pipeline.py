@@ -292,39 +292,190 @@ class TextDataPipeline:
         return vocab_curriculum
     
     def create_adaptive_tokenizer(self, texts: List[str], vocab_level: int = 1) -> AutoTokenizer:
-        """Create tokenizer for specific vocabulary level"""
+        """Create tokenizer with vocabulary filtered by level"""
         base_tokenizer = AutoTokenizer.from_pretrained("gpt2")
         
         if not self.vocab_curriculum:
-            # Standard compression
-            return self._compress_tokenizer(base_tokenizer, texts)
+            return self._add_special_tokens(base_tokenizer)
         
-        # Get vocabulary for this level
-        allowed_vocab = self.vocab_curriculum.get_vocab_for_level(vocab_level)
+        # Get allowed vocabulary for this level
+        allowed_vocab = set(self.vocab_curriculum.get_vocab_for_level(vocab_level))
         
-        # Create filtered tokenizer (simplified approach)
-        # In practice, you'd want to retrain BPE with filtered vocabulary
+        # Calculate actual vocabulary size for this level
+        core_size = len(self.vocab_curriculum.core_vocab)
+        level_additions = sum(len(self.vocab_curriculum.level_vocabs.get(i, [])) 
+                            for i in range(1, vocab_level + 1))
+        target_vocab_size = min(core_size + level_additions, self.target_vocab_size)
+        
+        # Analyze token frequencies in corpus
+        all_tokens = []
+        for text in texts:
+            tokens = base_tokenizer.encode(text, add_special_tokens=False)
+            all_tokens.extend(tokens)
+        
+        token_freq = Counter(all_tokens)
+        
+        # Get most frequent tokens up to target size
+        sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
+        
+        # Always include special tokens
+        special_token_ids = set()
+        special_tokens_dict = {}
+        
+        if base_tokenizer.pad_token is None:
+            special_tokens_dict["pad_token"] = "<pad>"
+        if base_tokenizer.mask_token is None:
+            special_tokens_dict["mask_token"] = "<mask>"
+        if base_tokenizer.bos_token is None:
+            special_tokens_dict["bos_token"] = "<bos>"
+        if base_tokenizer.eos_token is None:
+            special_tokens_dict["eos_token"] = "<eos>"
+        
+        # Add special tokens first
+        if special_tokens_dict:
+            base_tokenizer.add_special_tokens(special_tokens_dict)
+        
+        # Get special token IDs
+        special_token_ids.update([
+            base_tokenizer.pad_token_id,
+            base_tokenizer.mask_token_id,
+            base_tokenizer.bos_token_id,
+            base_tokenizer.eos_token_id
+        ])
+        special_token_ids.discard(None)
+        
+        # Select tokens for this vocabulary level
+        selected_tokens = set(special_token_ids)
+        
+        # Add most frequent tokens up to target size
+        for token_id, freq in sorted_tokens:
+            if len(selected_tokens) >= target_vocab_size:
+                break
+            
+            # Skip if already added or if not in allowed vocab (for higher levels)
+            if token_id in selected_tokens:
+                continue
+                
+            # For vocabulary curriculum: check if token is allowed at this level
+            if vocab_level < self.vocab_curriculum.max_level:
+                token_text = base_tokenizer.decode([token_id])
+                if token_text not in allowed_vocab and len(selected_tokens) > core_size:
+                    continue
+            
+            selected_tokens.add(token_id)
+        
+        # Create filtered tokenizer by building new vocabulary
+        # This is a simplified approach - in production you'd want to retrain BPE
+        filtered_vocab = {}
+        id_mapping = {}
+        
+        # Map old token IDs to new token IDs
+        for new_id, old_id in enumerate(sorted(selected_tokens)):
+            token_text = base_tokenizer.decode([old_id])
+            filtered_vocab[token_text] = new_id
+            id_mapping[old_id] = new_id
+        
+        # Create new tokenizer with filtered vocabulary
+        # Since we can't easily modify transformers tokenizer vocab, 
+        # we'll use a wrapper approach
+        class FilteredTokenizer:
+            def __init__(self, base_tokenizer, id_mapping, filtered_vocab, special_tokens):
+                self.base_tokenizer = base_tokenizer
+                self.id_mapping = id_mapping
+                self.filtered_vocab = filtered_vocab
+                self.vocab_size = len(filtered_vocab)
+                
+                # Set special token attributes
+                for attr, token in special_tokens.items():
+                    if hasattr(base_tokenizer, attr):
+                        setattr(self, attr, token)
+                        setattr(self, attr.replace('_token', '_token_id'), 
+                            filtered_vocab.get(token, 0))
+            
+            def encode(self, text, add_special_tokens=True, **kwargs):
+                # Encode with base tokenizer then map to filtered vocab
+                base_ids = self.base_tokenizer.encode(text, add_special_tokens=add_special_tokens, **kwargs)
+                filtered_ids = []
+                
+                for token_id in base_ids:
+                    if token_id in self.id_mapping:
+                        filtered_ids.append(self.id_mapping[token_id])
+                    else:
+                        # Map unknown tokens to a default (first non-special token)
+                        filtered_ids.append(1)  # Assuming 1 is first regular token
+                
+                return filtered_ids
+            
+            def decode(self, token_ids, skip_special_tokens=True, **kwargs):
+                # Map back to base vocabulary for decoding
+                reverse_mapping = {v: k for k, v in self.id_mapping.items()}
+                base_ids = []
+                
+                for token_id in token_ids:
+                    if token_id in reverse_mapping:
+                        base_ids.append(reverse_mapping[token_id])
+                    else:
+                        base_ids.append(self.base_tokenizer.unk_token_id or 0)
+                
+                return self.base_tokenizer.decode(base_ids, skip_special_tokens=skip_special_tokens, **kwargs)
+            
+            def save_pretrained(self, save_directory):
+                """Save the filtered tokenizer"""
+                save_path = Path(save_directory)
+                save_path.mkdir(parents=True, exist_ok=True)
+                
+                # Save base tokenizer
+                self.base_tokenizer.save_pretrained(save_path)
+                
+                # Save filtering information
+                import json
+                filter_info = {
+                    'vocab_level': vocab_level,
+                    'vocab_size': self.vocab_size,
+                    'id_mapping': {str(k): v for k, v in self.id_mapping.items()},
+                    'filtered_vocab': self.filtered_vocab,
+                    'target_vocab_size': target_vocab_size
+                }
+                
+                with open(save_path / 'vocab_filter.json', 'w') as f:
+                    json.dump(filter_info, f, indent=2)
+            
+            def __len__(self):
+                return self.vocab_size
+        
+        # Create and return filtered tokenizer
+        special_tokens = {
+            'pad_token': base_tokenizer.pad_token,
+            'mask_token': base_tokenizer.mask_token,
+            'bos_token': base_tokenizer.bos_token,
+            'eos_token': base_tokenizer.eos_token
+        }
+        
+        filtered_tokenizer = FilteredTokenizer(
+            base_tokenizer, id_mapping, filtered_vocab, special_tokens
+        )
+        
+        print(f"Created tokenizer for vocab level {vocab_level}: {len(filtered_tokenizer):,} tokens")
+        return filtered_tokenizer
+
+    def _add_special_tokens(self, tokenizer: AutoTokenizer) -> AutoTokenizer:
+        """Add special tokens to tokenizer if missing"""
         special_tokens = {
             "pad_token": "<pad>",
-            "mask_token": "<mask>",
+            "mask_token": "<mask>", 
             "bos_token": "<bos>",
             "eos_token": "<eos>"
         }
         
         tokens_to_add = {}
-        if base_tokenizer.pad_token is None:
-            tokens_to_add["pad_token"] = special_tokens["pad_token"]
-        if base_tokenizer.mask_token is None:
-            tokens_to_add["mask_token"] = special_tokens["mask_token"]
-        if base_tokenizer.bos_token is None:
-            tokens_to_add["bos_token"] = special_tokens["bos_token"]
-        if base_tokenizer.eos_token is None:
-            tokens_to_add["eos_token"] = special_tokens["eos_token"]
+        for key, token in special_tokens.items():
+            if getattr(tokenizer, key) is None:
+                tokens_to_add[key] = token
         
         if tokens_to_add:
-            base_tokenizer.add_special_tokens(tokens_to_add)
+            tokenizer.add_special_tokens(tokens_to_add)
         
-        return base_tokenizer
+        return tokenizer
     
     def _compress_tokenizer(self, tokenizer: AutoTokenizer, texts: List[str]) -> AutoTokenizer:
         """Compress tokenizer vocabulary based on corpus frequency"""
