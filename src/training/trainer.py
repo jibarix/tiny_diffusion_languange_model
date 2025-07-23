@@ -18,47 +18,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .scheduler import CurriculumScheduler
 from .metrics import TrainingMetrics
-from model.diffusion import MaskedDiffusionLM
-
-
-
-class TextDataset(Dataset):
-    """Simple dataset for curriculum training"""
-    
-    def __init__(self, segments: List, tokenizer, max_length: int = 512):
-        self.segments = segments
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-    def __len__(self):
-        return len(self.segments)
-    
-    def __getitem__(self, idx):
-        segment = self.segments[idx]
-        text = segment.text
-        
-        # Tokenize
-        tokens = self.tokenizer.encode(text, add_special_tokens=True)
-        
-        # Pad or truncate
-        if len(tokens) > self.max_length:
-            tokens = tokens[:self.max_length]
-        
-        # Convert to tensor
-        input_ids = torch.tensor(tokens, dtype=torch.long)
-        attention_mask = torch.ones_like(input_ids)
-        
-        # Pad if necessary
-        if len(input_ids) < self.max_length:
-            pad_length = self.max_length - len(input_ids)
-            input_ids = torch.cat([input_ids, torch.zeros(pad_length, dtype=torch.long)])
-            attention_mask = torch.cat([attention_mask, torch.zeros(pad_length, dtype=torch.long)])
-        
-        return {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'difficulty': segment.combined_difficulty
-        }
+from .format_datasets import SentenceDataset, PairDataset, ParagraphDataset
+from ..model.diffusion import MaskedDiffusionLM
 
 
 class CurriculumTrainer:
@@ -155,9 +116,19 @@ class CurriculumTrainer:
         if self.use_amp:
             self.scaler = GradScaler()
             
-    def create_dataloader(self, segments: List, batch_size: int, shuffle: bool = True) -> DataLoader:
-        """Create dataloader for given segments"""
-        dataset = TextDataset(segments, self.tokenizer, self.config.model.max_seq_len)
+    def create_dataloader(self, segments: List, stage_config, batch_size: int, shuffle: bool = True) -> DataLoader:
+        """Create format-aware dataloader for given stage"""
+        
+        # Choose dataset class based on format type
+        if stage_config.format_type == "sentences":
+            dataset = SentenceDataset(segments, self.tokenizer, self.config.model.max_seq_len)
+        elif stage_config.format_type == "pairs":
+            dataset = PairDataset(segments, self.tokenizer, self.config.model.max_seq_len)
+        elif stage_config.format_type == "paragraphs":
+            dataset = ParagraphDataset(segments, self.tokenizer, self.config.model.max_seq_len)
+        else:
+            # Default to sentences
+            dataset = SentenceDataset(segments, self.tokenizer, self.config.model.max_seq_len)
         
         return DataLoader(
             dataset,
@@ -235,7 +206,8 @@ class CurriculumTrainer:
                 lr = self.lr_scheduler.get_last_lr()[0]
                 self.logger.info(
                     f"Step {self.global_step}: Loss={loss.item():.4f}, "
-                    f"LR={lr:.2e}, Mask_Rate={masking_rate:.2f}"
+                    f"LR={lr:.2e}, Mask_Rate={masking_rate:.2f}, "
+                    f"Format={stage_config.format_type}"
                 )
                 
                 # Tensorboard logging
@@ -253,8 +225,20 @@ class CurriculumTrainer:
     def validate(self) -> Dict[str, float]:
         """Run validation"""
         self.model.eval()
+        
+        # Create validation dataloader using sentences format
+        from config.curriculum_config import StageConfig
+        sentence_stage = StageConfig(
+            name="validation",
+            epochs=1,
+            masking_rate_range=(0.15, 0.15),
+            data_selection="all",
+            format_type="sentences"
+        )
+        
         val_dataloader = self.create_dataloader(
             self.val_data, 
+            sentence_stage,
             self.config.training.val_batch_size_actual,
             shuffle=False
         )
@@ -339,14 +323,16 @@ class CurriculumTrainer:
         for stage_idx, stage_config in enumerate(self.config.curriculum.stages):
             self.current_stage = stage_idx
             self.logger.info(f"\n=== Stage {stage_idx + 1}: {stage_config.name} ===")
+            self.logger.info(f"Format: {stage_config.format_type}")
             
             # Get data for this stage
             stage_data = self.train_data[stage_config.data_selection]
             self.logger.info(f"Stage data: {len(stage_data)} examples")
             
-            # Create dataloader
+            # Create format-specific dataloader
             train_dataloader = self.create_dataloader(
                 stage_data, 
+                stage_config,  # Pass stage config for format
                 self.config.training.batch_size,
                 shuffle=True
             )
