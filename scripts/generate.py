@@ -12,6 +12,7 @@ import torch
 from transformers import AutoTokenizer
 
 # Add src to path
+sys.path.append(str(Path(__file__).parent.parent))
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from config import ProjectConfig
@@ -27,7 +28,8 @@ def load_model_and_tokenizer(checkpoint_path: str, data_dir: str):
     config = checkpoint['config']
     
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(Path(data_dir) / "tokenizer")
+    from transformers import GPT2Tokenizer
+    tokenizer = GPT2Tokenizer.from_pretrained(str(Path(data_dir) / "tokenizer_level_1"))
     
     # Create model
     model = MaskedDiffusionLM(

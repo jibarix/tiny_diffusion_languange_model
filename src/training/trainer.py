@@ -344,38 +344,94 @@ class EnhancedCurriculumTrainer:
         if self.use_amp:
             self.scaler = GradScaler()
     
+    def get_stage_data_with_fallback(self, stage: int, vocab_level: int) -> List[TextSegment]:
+        """Get stage data with progressive fallback to ensure non-empty dataset"""
+        # Try exact filtering first
+        segments = [s for s in self.pipeline.segments 
+                   if s.stage_assignment == stage and s.vocabulary_level <= vocab_level]
+        
+        if len(segments) > 0:
+            self.logger.info(f"Found {len(segments)} segments for stage {stage}, vocab level {vocab_level}")
+            return segments
+        
+        self.logger.warning(f"No segments found for stage {stage}, vocab level {vocab_level}. Trying fallbacks...")
+        
+        # Fallback 1: Ignore vocabulary level restriction
+        segments = [s for s in self.pipeline.segments if s.stage_assignment == stage]
+        if len(segments) > 0:
+            self.logger.info(f"Fallback 1: Found {len(segments)} segments for stage {stage} (ignoring vocab level)")
+            return segments
+        
+        # Fallback 2: Use all segments if stage filtering fails
+        segments = self.pipeline.segments
+        self.logger.warning(f"Fallback 2: Using all {len(segments)} segments (ignoring stage and vocab filtering)")
+        
+        # If still empty, create minimal test data
+        if len(segments) == 0:
+            self.logger.error("No segments available! Creating minimal test data...")
+            test_segment = TextSegment(
+                text="This is a test sentence for training.",
+                index=0,
+                lexical_rarity=0.5,
+                syntactic_complexity=0.5,
+                thematic_centrality=0.5,
+                combined_difficulty=0.5,
+                stage_assignment=stage,
+                vocabulary_level=vocab_level,
+                length=7
+            )
+            segments = [test_segment]
+        
+        return segments
+    
     def create_stage_dataloader(self, stage: int, vocab_level: int, batch_size: int) -> DataLoader:
-        """Create curriculum-aware dataloader for specific stage"""
+        """Create curriculum-aware dataloader for specific stage with fallback"""
         tokenizer = self.tokenizers.get(vocab_level, self.tokenizers[1])
         
         if stage == 1:
             # Foundation: Individual sentences
-            segments = self.pipeline.get_stage_data(stage, vocab_level)
+            segments = self.get_stage_data_with_fallback(stage, vocab_level)
             dataset = SentenceDataset(segments, tokenizer, self.config.model.max_seq_len)
             
         elif stage == 2:
             # Structural: Argument pairs
             pairs = self.pipeline.get_argument_pairs(stage)
-            # Filter by vocabulary level
+            
+            # Filter by vocabulary level with fallback
             filtered_pairs = []
             for evidence, claim in pairs:
                 if (evidence.vocabulary_level <= vocab_level and 
                     claim.vocabulary_level <= vocab_level):
                     filtered_pairs.append((evidence, claim))
+            
+            # Fallback: If no pairs found, create pairs from available segments
+            if len(filtered_pairs) == 0:
+                segments = self.get_stage_data_with_fallback(stage, vocab_level)
+                self.logger.warning(f"No argument pairs found. Creating pairs from {len(segments)} segments")
+                
+                # Create simple pairs from consecutive segments
+                for i in range(0, len(segments) - 1, 2):
+                    if i + 1 < len(segments):
+                        filtered_pairs.append((segments[i], segments[i + 1]))
+                
+                # If still no pairs, duplicate segments
+                if len(filtered_pairs) == 0 and segments:
+                    filtered_pairs = [(segments[0], segments[0])]
+            
             dataset = ArgumentPairDataset(filtered_pairs, tokenizer, self.config.model.max_seq_len)
             
         elif stage == 3:
             # Refinement: Full paragraphs + pseudo data
-            segments = self.pipeline.get_stage_data(stage, vocab_level)
+            segments = self.get_stage_data_with_fallback(stage, vocab_level)
             
             # Generate pseudo data if we have a trained model
             pseudo_texts = []
             if hasattr(self, 'stage_2_model_path') and os.path.exists(self.stage_2_model_path):
-                stage_2_segments = self.pipeline.get_stage_data(2, vocab_level)
+                stage_2_segments = self.get_stage_data_with_fallback(2, vocab_level)
                 pseudo_texts = self.pipeline.generate_pseudo_data(
                     None, stage_2_segments, num_samples=min(
-                        self.config.curriculum.pseudo_data_max_samples,
-                        int(len(segments) * self.config.curriculum.pseudo_data_ratio)
+                        getattr(self.config.curriculum, 'pseudo_data_max_samples', 100),
+                        int(len(segments) * getattr(self.config.curriculum, 'pseudo_data_ratio', 0.25))
                     )
                 )
             
@@ -384,13 +440,17 @@ class EnhancedCurriculumTrainer:
         else:
             raise ValueError(f"Invalid stage: {stage}")
         
+        # Ensure dataset is not empty
+        if len(dataset) == 0:
+            raise ValueError(f"Dataset is empty for stage {stage}, vocab level {vocab_level}")
+        
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=self.config.training.dataloader_num_workers,
             pin_memory=self.config.training.pin_memory,
-            drop_last=True
+            drop_last=True if len(dataset) > batch_size else False  # Don't drop last if dataset is small
         )
     
     def train_epoch(self, dataloader: DataLoader, stage: int, vocab_level: int) -> Dict[str, float]:
@@ -613,6 +673,9 @@ class EnhancedCurriculumTrainer:
                 # Vocabulary curriculum within each stage
                 max_vocab_level = getattr(self.pipeline.vocab_curriculum, 'max_level', 3) if self.pipeline.vocab_curriculum else 1
                 
+                # Share epoch budget across all vocab levels in this stage
+                total_stage_epochs = 0
+                
                 for vocab_level in range(1, max_vocab_level + 1):
                     if vocab_level > 1:
                         self.logger.info(f"\n--- Advancing to Vocabulary Level {vocab_level} ---")
@@ -620,9 +683,13 @@ class EnhancedCurriculumTrainer:
                     self.curriculum_scheduler.current_vocab_level = vocab_level
                     
                     # Create stage and vocab-specific dataloader
-                    train_dataloader = self.create_stage_dataloader(
-                        stage, vocab_level, self.config.training.batch_size
-                    )
+                    try:
+                        train_dataloader = self.create_stage_dataloader(
+                            stage, vocab_level, self.config.training.batch_size
+                        )
+                    except ValueError as e:
+                        self.logger.error(f"Failed to create dataloader: {e}")
+                        continue
                     
                     if len(train_dataloader) == 0:
                         self.logger.warning(f"No data for stage {stage}, vocab level {vocab_level}")
@@ -633,13 +700,12 @@ class EnhancedCurriculumTrainer:
                         self._setup_optimizer()
                         self.logger.info("Optimizer reset for new stage")
                     
-                    # Train for this vocab level
+                    # Train for this vocab level (sharing stage epoch budget)
                     vocab_start_loss = None
-                    epochs_since_vocab_start = 0
                     
-                    while epochs_since_vocab_start < stage_config.epochs:
+                    while total_stage_epochs < stage_config.epochs:
                         self.current_epoch += 1
-                        epochs_since_vocab_start += 1
+                        total_stage_epochs += 1
                         
                         # Train epoch
                         start_time = time.time()
@@ -683,13 +749,17 @@ class EnhancedCurriculumTrainer:
                         
                         # Check stage advancement  
                         if self.curriculum_scheduler.should_advance_stage(
-                            epochs_since_vocab_start, list(recent_losses)):
-                            self.logger.info(f"Stage {stage} completed after {epochs_since_vocab_start} epochs")
+                            total_stage_epochs, list(recent_losses)):
+                            self.logger.info(f"Stage {stage} completed after {total_stage_epochs} epochs")
                             break
                         
                         # Save checkpoint
                         if self.global_step % self.config.training.save_every == 0:
                             self.save_checkpoint(stage, vocab_level)
+                    
+                    # Break out of vocab level loop if stage is complete
+                    if total_stage_epochs >= stage_config.epochs:
+                        break
                     
                     # Record stage performance
                     if recent_losses:
