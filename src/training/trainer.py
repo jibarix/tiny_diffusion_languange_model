@@ -219,21 +219,39 @@ class EnhancedCurriculumTrainer:
         
     def load_stage_tokenizers(self):
         """Load tokenizers for different vocabulary levels"""
-        # Try to infer data directory from config or use default
+        # First, try to load vocabulary curriculum tokenizers
         data_dir = Path(getattr(self.config, 'data_dir', 'data/processed'))
+        vocab_curriculum_exists = False
         
-        # Try to load level-specific tokenizers
-        for level in range(1, 6):  # Vocab levels 1-5
+        # Check if vocabulary curriculum tokenizers exist
+        for level in range(1, 6):
             tokenizer_path = data_dir / f"tokenizer_level_{level}"
             if tokenizer_path.exists():
-                from transformers import AutoTokenizer
-                self.tokenizers[level] = AutoTokenizer.from_pretrained(tokenizer_path)
-                print(f"Loaded tokenizer level {level}: {len(self.tokenizers[level]):,} tokens")
-            else:
-                # Fall back to standard tokenizer
-                fallback_tokenizer = self.pipeline.tokenizer or self.create_default_tokenizer()
-                self.tokenizers[level] = fallback_tokenizer
-                print(f"Using fallback tokenizer for level {level}: {len(fallback_tokenizer):,} tokens")
+                vocab_curriculum_exists = True
+                break
+        
+        if vocab_curriculum_exists:
+            print("🔧 Loading vocabulary curriculum tokenizers...")
+            # Original vocabulary curriculum code
+            for level in range(1, 6):
+                tokenizer_path = data_dir / f"tokenizer_level_{level}"
+                if tokenizer_path.exists():
+                    from transformers import AutoTokenizer
+                    self.tokenizers[level] = AutoTokenizer.from_pretrained(tokenizer_path)
+                    print(f"Loaded tokenizer level {level}: {len(self.tokenizers[level]):,} tokens")
+                else:
+                    # Fall back to standard tokenizer
+                    fallback_tokenizer = self.pipeline.tokenizer or self.create_default_tokenizer()
+                    self.tokenizers[level] = fallback_tokenizer
+                    print(f"Using fallback tokenizer for level {level}: {len(fallback_tokenizer):,} tokens")
+        else:
+            print("🔧 No vocabulary curriculum found - using single tokenizer for all levels")
+            # Use the pipeline's tokenizer (should be the compressed one) for all levels
+            main_tokenizer = self.pipeline.tokenizer or self.create_default_tokenizer()
+            for level in range(1, 6):
+                self.tokenizers[level] = main_tokenizer
+            
+            print(f"✅ Using single tokenizer for all levels: {len(main_tokenizer):,} tokens")
 
     def validate_model_vocab_compatibility(self, tokenizer, stage: int, vocab_level: int):
         """Ensure model vocab size matches tokenizer"""
@@ -297,10 +315,79 @@ class EnhancedCurriculumTrainer:
 
     def create_stage_dataloader(self, stage: int, vocab_level: int, batch_size: int) -> DataLoader:
         """Create curriculum-aware dataloader for specific stage with fallback"""
+        
+        # Use the appropriate tokenizer for this vocabulary level
         tokenizer = self.tokenizers.get(vocab_level, self.tokenizers[1])
         
-        # Validate model-tokenizer compatibility
-        self.validate_model_vocab_compatibility(tokenizer, stage, vocab_level)
+        # Validate model-tokenizer compatibility (only if vocab curriculum is active)
+        if hasattr(self, 'vocab_curriculum_active') and self.vocab_curriculum_active:
+            self.validate_model_vocab_compatibility(tokenizer, stage, vocab_level)
+        
+        # Rest of the method stays the same...
+        if stage == 1:
+            # Foundation: Individual sentences
+            segments = self.get_stage_data_with_fallback(stage, vocab_level)
+            dataset = SentenceDataset(segments, tokenizer, self.config.model.max_seq_len)
+            
+        elif stage == 2:
+            # Structural: Argument pairs
+            pairs = self.pipeline.get_argument_pairs(stage)
+            
+            # Filter by vocabulary level with fallback
+            filtered_pairs = []
+            for evidence, claim in pairs:
+                if (evidence.vocabulary_level <= vocab_level and 
+                    claim.vocabulary_level <= vocab_level):
+                    filtered_pairs.append((evidence, claim))
+            
+            # Fallback: If no pairs found, create pairs from available segments
+            if len(filtered_pairs) == 0:
+                segments = self.get_stage_data_with_fallback(stage, vocab_level)
+                self.logger.warning(f"No argument pairs found. Creating pairs from {len(segments)} segments")
+                
+                # Create simple pairs from consecutive segments
+                for i in range(0, len(segments) - 1, 2):
+                    if i + 1 < len(segments):
+                        filtered_pairs.append((segments[i], segments[i + 1]))
+                
+                # If still no pairs, duplicate segments
+                if len(filtered_pairs) == 0 and segments:
+                    filtered_pairs = [(segments[0], segments[0])]
+            
+            dataset = ArgumentPairDataset(filtered_pairs, tokenizer, self.config.model.max_seq_len)
+            
+        elif stage == 3:
+            # Refinement: Full paragraphs + pseudo data
+            segments = self.get_stage_data_with_fallback(stage, vocab_level)
+            
+            # Generate pseudo data if we have a trained model
+            pseudo_texts = []
+            if hasattr(self, 'stage_2_model_path') and os.path.exists(self.stage_2_model_path):
+                stage_2_segments = self.get_stage_data_with_fallback(2, vocab_level)
+                pseudo_texts = self.pipeline.generate_pseudo_data(
+                    None, stage_2_segments, num_samples=min(
+                        getattr(self.config.curriculum, 'pseudo_data_max_samples', 100),
+                        int(len(segments) * getattr(self.config.curriculum, 'pseudo_data_ratio', 0.25))
+                    )
+                )
+            
+            dataset = SelfTrainingDataset(segments, pseudo_texts, tokenizer, self.config.model.max_seq_len)
+            
+        else:
+            raise ValueError(f"Invalid stage: {stage}")
+        
+        # Ensure dataset is not empty
+        if len(dataset) == 0:
+            raise ValueError(f"Dataset is empty for stage {stage}, vocab level {vocab_level}")
+        
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=self.config.training.dataloader_num_workers,
+            pin_memory=self.config.training.pin_memory,
+            drop_last=True if len(dataset) > batch_size else False  # Don't drop last if dataset is small
+        )
     
     def create_default_tokenizer(self):
         """Create default tokenizer if none available"""
@@ -619,18 +706,21 @@ class EnhancedCurriculumTrainer:
         
         # Update dynamic difficulty scores
         if hasattr(self, 'pipeline') and len(batch_losses) > 0:
-            # For now, update a sample of segments
-            # In practice, you'd track which segments were in each batch
-            sample_segments = random.sample(
-                range(len(self.pipeline.segments)), 
-                min(len(batch_losses), len(self.pipeline.segments))
-            )
-            
-            self.pipeline.update_dynamic_scores(
-                sample_segments,
-                batch_losses[-len(sample_segments):],
-                batch_grad_norms[-len(sample_segments):] if batch_grad_norms else None
-            )
+            # Only update when we have gradient norms (every gradient_accumulation_steps)
+            if batch_idx % self.config.training.gradient_accumulation_steps == 0 and len(batch_grad_norms) > 0:
+                # Use the most recent loss and gradient norm
+                recent_loss = batch_losses[-1]
+                recent_grad_norm = batch_grad_norms[-1]
+                
+                # Sample one segment to update
+                if len(self.pipeline.segments) > 0:
+                    sample_segment = random.randint(0, len(self.pipeline.segments) - 1)
+                    
+                    self.pipeline.update_dynamic_scores(
+                        [sample_segment],
+                        [recent_loss],
+                        [recent_grad_norm]
+                    )
         
         # Average metrics
         if epoch_metrics['num_batches'] > 0:

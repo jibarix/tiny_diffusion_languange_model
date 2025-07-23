@@ -459,7 +459,7 @@ class TextDataPipeline:
         return filtered_tokenizer
 
     def _add_special_tokens(self, tokenizer: AutoTokenizer) -> AutoTokenizer:
-        """Add special tokens to tokenizer if missing"""
+        """Add special tokens to tokenizer (compression happens later during save)"""
         special_tokens = {
             "pad_token": "<pad>",
             "mask_token": "<mask>", 
@@ -474,36 +474,206 @@ class TextDataPipeline:
         
         if tokens_to_add:
             tokenizer.add_special_tokens(tokens_to_add)
+            print(f"✅ Added special tokens: {list(tokens_to_add.keys())}")
         
         return tokenizer
     
     def _compress_tokenizer(self, tokenizer: AutoTokenizer, texts: List[str]) -> AutoTokenizer:
         """Compress tokenizer vocabulary based on corpus frequency"""
-        # Analyze token frequencies
+        from collections import Counter
+        import json
+        
+        print(f"🔧 Compressing vocabulary from {len(tokenizer):,} to {self.target_vocab_size:,} tokens...")
+        
+        # Analyze token frequencies in the corpus
         all_tokens = []
         for text in texts:
             tokens = tokenizer.encode(text, add_special_tokens=False)
             all_tokens.extend(tokens)
         
-        token_freq = Counter(all_tokens)
+        if not all_tokens:
+            print("⚠️  No tokens found in corpus, returning original tokenizer")
+            return tokenizer
         
-        # Keep tokens that cover 90% of corpus
+        token_freq = Counter(all_tokens)
         total_tokens = len(all_tokens)
+        
+        # CRITICAL: Always include special tokens first
+        special_token_ids = []
+        special_token_mapping = {}
+        
+        # Map special tokens to positions 0, 1, 2, etc.
+        next_id = 0
+        for attr_name in ['pad_token_id', 'mask_token_id', 'bos_token_id', 'eos_token_id', 'unk_token_id']:
+            original_id = getattr(tokenizer, attr_name, None)
+            if original_id is not None:
+                special_token_ids.append(original_id)
+                special_token_mapping[original_id] = next_id
+                next_id += 1
+        
+        print(f"🔧 Special tokens mapped: {len(special_token_mapping)} tokens")
+        
+        # Sort remaining tokens by frequency (most frequent first)
         sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
         
+        # Select tokens to keep (excluding special tokens already selected)
+        selected_tokens = set(special_token_ids)  # Start with special tokens
         cumulative_freq = 0
-        kept_tokens = []
+        
+        # Add most frequent tokens until we hit target size
         for token_id, freq in sorted_tokens:
+            if token_id in selected_tokens:
+                continue  # Skip if already included as special token
+                
+            if len(selected_tokens) >= self.target_vocab_size:
+                break
+                
+            selected_tokens.add(token_id)
             cumulative_freq += freq
-            kept_tokens.append(token_id)
-            if cumulative_freq >= 0.9 * total_tokens:
+            
+            # Stop if we've covered 95% of the corpus and have reasonable size
+            if cumulative_freq >= 0.95 * total_tokens and len(selected_tokens) >= 1000:
                 break
         
-        # Ensure we don't exceed parameter budget (20% rule)
-        max_vocab_size = min(len(kept_tokens), self.target_vocab_size)
+        # Create mapping: special tokens get fixed positions 0,1,2... then frequent tokens
+        old_to_new_mapping = {}
+        new_to_old_mapping = {}
         
-        print(f"Compressed vocabulary: {len(tokenizer)} → {max_vocab_size} tokens")
-        return tokenizer  # Simplified - return original for now
+        # First, assign special tokens to fixed positions
+        for original_id, new_id in special_token_mapping.items():
+            old_to_new_mapping[original_id] = new_id
+            new_to_old_mapping[new_id] = original_id
+        
+        # Then assign remaining tokens
+        current_new_id = len(special_token_mapping)
+        remaining_tokens = sorted([t for t in selected_tokens if t not in special_token_mapping])
+        
+        for old_id in remaining_tokens:
+            old_to_new_mapping[old_id] = current_new_id
+            new_to_old_mapping[current_new_id] = old_id
+            current_new_id += 1
+        
+        # Create new vocabulary
+        new_vocab = {}
+        for new_id, old_id in new_to_old_mapping.items():
+            token_text = tokenizer.decode([old_id])
+            new_vocab[token_text] = new_id
+        
+        # Create compressed tokenizer class
+        class CompressedTokenizer:
+            def __init__(self, base_tokenizer, old_to_new, new_to_old, new_vocab, special_mapping):
+                self.base_tokenizer = base_tokenizer
+                self.old_to_new = old_to_new
+                self.new_to_old = new_to_old
+                self.new_vocab = new_vocab
+                self.vocab_size = len(new_vocab)
+                
+                # FIXED: Set special token IDs using guaranteed mappings
+                original_pad_id = base_tokenizer.pad_token_id
+                original_mask_id = base_tokenizer.mask_token_id
+                original_bos_id = base_tokenizer.bos_token_id
+                original_eos_id = base_tokenizer.eos_token_id
+                original_unk_id = base_tokenizer.unk_token_id
+                
+                self.pad_token_id = special_mapping.get(original_pad_id, 0)
+                self.mask_token_id = special_mapping.get(original_mask_id, 1)
+                self.bos_token_id = special_mapping.get(original_bos_id) if original_bos_id else None
+                self.eos_token_id = special_mapping.get(original_eos_id) if original_eos_id else None
+                self.unk_token_id = special_mapping.get(original_unk_id, 0) if original_unk_id else 0
+                
+                # Validate all special token IDs are within vocabulary
+                for attr_name in ['pad_token_id', 'mask_token_id', 'bos_token_id', 'eos_token_id', 'unk_token_id']:
+                    token_id = getattr(self, attr_name)
+                    if token_id is not None and token_id >= self.vocab_size:
+                        print(f"❌ ERROR: {attr_name}={token_id} >= vocab_size={self.vocab_size}")
+                        raise ValueError(f"Special token {attr_name} is outside vocabulary range")
+                
+                # Set special token strings
+                self.pad_token = base_tokenizer.pad_token
+                self.mask_token = base_tokenizer.mask_token
+                self.bos_token = base_tokenizer.bos_token
+                self.eos_token = base_tokenizer.eos_token
+                self.unk_token = base_tokenizer.unk_token
+                
+                print(f"✅ Special token mapping:")
+                print(f"   pad_token_id: {original_pad_id} → {self.pad_token_id}")
+                print(f"   mask_token_id: {original_mask_id} → {self.mask_token_id}")
+            
+            def encode(self, text, add_special_tokens=True, **kwargs):
+                # Encode with base tokenizer then map to compressed vocab
+                base_ids = self.base_tokenizer.encode(text, add_special_tokens=add_special_tokens, **kwargs)
+                compressed_ids = []
+                
+                for token_id in base_ids:
+                    if token_id in self.old_to_new:
+                        compressed_ids.append(self.old_to_new[token_id])
+                    else:
+                        # Map unknown tokens to UNK
+                        compressed_ids.append(self.unk_token_id)
+                
+                return compressed_ids
+            
+            def decode(self, token_ids, skip_special_tokens=True, **kwargs):
+                # Map back to base vocabulary for decoding
+                base_ids = []
+                for token_id in token_ids:
+                    if token_id in self.new_to_old:
+                        base_ids.append(self.new_to_old[token_id])
+                    else:
+                        # Handle out-of-vocab tokens
+                        base_ids.append(self.base_tokenizer.unk_token_id or 0)
+                
+                return self.base_tokenizer.decode(base_ids, skip_special_tokens=skip_special_tokens, **kwargs)
+            
+            def save_pretrained(self, save_directory):
+                """Save compressed tokenizer"""
+                from pathlib import Path
+                save_path = Path(save_directory)
+                save_path.mkdir(parents=True, exist_ok=True)
+                
+                # Save base tokenizer
+                self.base_tokenizer.save_pretrained(save_path)
+                
+                # Save compression mapping
+                compression_info = {
+                    'vocab_size': self.vocab_size,
+                    'target_vocab_size': self.vocab_size,
+                    'old_to_new_mapping': {str(k): v for k, v in self.old_to_new.items()},
+                    'new_to_old_mapping': {str(k): v for k, v in self.new_to_old.items()},
+                    'new_vocab': self.new_vocab,
+                    'special_tokens': {
+                        'pad_token_id': self.pad_token_id,
+                        'mask_token_id': self.mask_token_id,
+                        'bos_token_id': self.bos_token_id,
+                        'eos_token_id': self.eos_token_id,
+                        'unk_token_id': self.unk_token_id
+                    }
+                }
+                
+                with open(save_path / 'compression_info.json', 'w') as f:
+                    json.dump(compression_info, f, indent=2)
+                
+                print(f"💾 Compressed tokenizer saved to {save_path}")
+            
+            def __len__(self):
+                return self.vocab_size
+        
+        # Create and return compressed tokenizer
+        compressed_tokenizer = CompressedTokenizer(
+            tokenizer, old_to_new_mapping, new_to_old_mapping, new_vocab, special_token_mapping
+        )
+        
+        coverage = cumulative_freq / total_tokens
+        compression_ratio = len(selected_tokens) / len(tokenizer)
+        
+        print(f"✅ Vocabulary compressed:")
+        print(f"   Original size: {len(tokenizer):,} tokens")
+        print(f"   Compressed size: {len(selected_tokens):,} tokens")
+        print(f"   Compression ratio: {compression_ratio:.1%}")
+        print(f"   Corpus coverage: {coverage:.1%}")
+        
+        return compressed_tokenizer
+
     
     def calculate_lexical_difficulty(self, segments: List[str]) -> List[float]:
         """Calculate lexical rarity scores"""
@@ -827,6 +997,13 @@ class TextDataPipeline:
         """Save processed data with all curriculum components"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
+
+        # ADD THESE DEBUG LINES:
+        print(f"🔍 DEBUG: enable_vocab_curriculum = {self.enable_vocab_curriculum}")
+        print(f"🔍 DEBUG: vocab_curriculum exists = {self.vocab_curriculum is not None}")
+        print(f"🔍 DEBUG: tokenizer exists = {self.tokenizer is not None}")
+        if self.tokenizer:
+            print(f"🔍 DEBUG: tokenizer size = {len(self.tokenizer):,}")
         
         # Save segments
         with open(output_path / "segments.pkl", "wb") as f:
@@ -851,7 +1028,7 @@ class TextDataPipeline:
             with open(output_path / "vocab_curriculum.pkl", "wb") as f:
                 pickle.dump(self.vocab_curriculum, f)
         
-        # Save tokenizer for each vocab level
+        # Save tokenizer with compression when vocab curriculum disabled
         if self.vocab_curriculum:
             for level in range(1, self.vocab_curriculum.max_level + 1):
                 tokenizer = self.create_adaptive_tokenizer(
@@ -860,10 +1037,18 @@ class TextDataPipeline:
                 tokenizer_path = output_path / f"tokenizer_level_{level}"
                 tokenizer.save_pretrained(tokenizer_path)
         else:
-            # Save standard tokenizer
+            # Apply compression when vocab curriculum is disabled
             if self.tokenizer:
+                print("🔧 Compressing vocabulary for saving...")
+                texts = [s.text for s in self.segments]
+                compressed_tokenizer = self._compress_tokenizer(self.tokenizer, texts)
+                
                 tokenizer_path = output_path / "tokenizer"
-                self.tokenizer.save_pretrained(tokenizer_path)
+                compressed_tokenizer.save_pretrained(tokenizer_path)
+                
+                print(f"💾 Compressed tokenizer saved: {len(compressed_tokenizer):,} tokens")
+            else:
+                print("⚠️ No tokenizer to save")
         
         # Save embeddings and models
         if self.embeddings is not None:

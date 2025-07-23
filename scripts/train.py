@@ -36,9 +36,40 @@ def set_seed(seed: int):
 
 
 def create_model(config: ProjectConfig, tokenizer) -> MaskedDiffusionLM:
-    """Create model from config"""
+    """Create model from config with proper vocab size handling"""
+    
+    # Check vocab size mismatch
+    tokenizer_vocab_size = len(tokenizer)
+    config_vocab_size = config.model.vocab_size
+    
+    if tokenizer_vocab_size != config_vocab_size:
+        print(f"⚠️  Vocab size mismatch:")
+        print(f"   Tokenizer size: {tokenizer_vocab_size:,}")
+        print(f"   Config size: {config_vocab_size:,}")
+        
+        # Use the tokenizer size (what actually exists)
+        actual_vocab_size = tokenizer_vocab_size
+        print(f"   Using tokenizer size: {actual_vocab_size:,}")
+        print(f"   💡 To fix: Update config.yaml vocab_size to {actual_vocab_size}")
+    else:
+        actual_vocab_size = config_vocab_size
+        print(f"✅ Vocab size matches: {actual_vocab_size:,}")
+    
+    # Validate tokenizer has required special tokens
+    required_tokens = ['pad_token_id', 'mask_token_id']
+    missing_tokens = []
+    for token_attr in required_tokens:
+        if getattr(tokenizer, token_attr) is None:
+            missing_tokens.append(token_attr)
+    
+    if missing_tokens:
+        raise ValueError(f"Tokenizer missing required tokens: {missing_tokens}. "
+                        f"Please ensure tokenizer has special tokens.")
+    
+    print(f"🏗️  Creating model with {actual_vocab_size:,} vocab size...")
+    
     return MaskedDiffusionLM(
-        vocab_size=len(tokenizer),
+        vocab_size=actual_vocab_size,          # Use actual tokenizer size
         d_model=config.model.d_model,
         n_layers=config.model.n_layers,
         n_heads=config.model.n_heads,
@@ -54,45 +85,115 @@ def create_model(config: ProjectConfig, tokenizer) -> MaskedDiffusionLM:
 
 
 def load_data(data_dir: str, val_split: float = 0.1):
-    """Load processed data and create train/val splits"""
+    """Load processed data and create train/val splits with compressed tokenizer support"""
+    import json
     data_path = Path(data_dir)
     
     # Load curriculum splits
     with open(data_path / "curriculum_splits.pkl", "rb") as f:
         curriculum_splits = pickle.load(f)
     
-    # Load tokenizer - handle vocabulary curriculum
+    # Load tokenizer with compression support
     tokenizer = None
+    tokenizer_path = data_path / "tokenizer"
     
-    # Try to load tokenizer_level_1 (smallest vocabulary)
-    tokenizer_level_1_path = data_path / "tokenizer_level_1"
-    if tokenizer_level_1_path.exists():
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_level_1_path)
-        print(f"✅ Using vocabulary curriculum tokenizer (level 1)")
-    else:
-        # Fallback to standard tokenizer
-        tokenizer_path = data_path / "tokenizer"
-        if tokenizer_path.exists():
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-            print(f"✅ Using standard tokenizer")
-        else:
-            # Create default tokenizer
-            tokenizer = AutoTokenizer.from_pretrained("gpt2")
-            special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
-                            "bos_token": "<bos>", "eos_token": "<eos>"}
-            tokens_to_add = {k: v for k, v in special_tokens.items() 
-                           if getattr(tokenizer, k) is None}
-            if tokens_to_add:
-                tokenizer.add_special_tokens(tokens_to_add)
-            print(f"✅ Using default GPT-2 tokenizer with special tokens")
+    if tokenizer_path.exists():
+        try:
+            # Check if this is a compressed tokenizer
+            compression_info_path = tokenizer_path / "compression_info.json"
+            
+            if compression_info_path.exists():
+                print("🔧 Loading compressed tokenizer...")
+                
+                # Load base tokenizer
+                base_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+                
+                # Load compression info
+                with open(compression_info_path, 'r') as f:
+                    compression_info = json.load(f)
+                
+                # Recreate CompressedTokenizer class (same as in pipeline)
+                class CompressedTokenizer:
+                    def __init__(self, base_tokenizer, compression_info):
+                        self.base_tokenizer = base_tokenizer
+                        
+                        # Convert string keys back to integers
+                        self.old_to_new = {int(k): v for k, v in compression_info['old_to_new_mapping'].items()}
+                        self.new_to_old = {int(k): v for k, v in compression_info['new_to_old_mapping'].items()}
+                        self.new_vocab = compression_info['new_vocab']
+                        self.vocab_size = compression_info['vocab_size']
+                        
+                        # Set special tokens
+                        special = compression_info['special_tokens']
+                        self.pad_token_id = special['pad_token_id']
+                        self.mask_token_id = special['mask_token_id']
+                        self.bos_token_id = special.get('bos_token_id')
+                        self.eos_token_id = special.get('eos_token_id')
+                        self.unk_token_id = special.get('unk_token_id', 0)
+                        
+                        # Set special token strings
+                        self.pad_token = base_tokenizer.pad_token
+                        self.mask_token = base_tokenizer.mask_token
+                        self.bos_token = base_tokenizer.bos_token
+                        self.eos_token = base_tokenizer.eos_token
+                        self.unk_token = base_tokenizer.unk_token
+                    
+                    def encode(self, text, add_special_tokens=True, **kwargs):
+                        base_ids = self.base_tokenizer.encode(text, add_special_tokens=add_special_tokens, **kwargs)
+                        compressed_ids = []
+                        
+                        for token_id in base_ids:
+                            if token_id in self.old_to_new:
+                                compressed_ids.append(self.old_to_new[token_id])
+                            else:
+                                compressed_ids.append(self.unk_token_id)
+                        
+                        return compressed_ids
+                    
+                    def decode(self, token_ids, skip_special_tokens=True, **kwargs):
+                        base_ids = []
+                        for token_id in token_ids:
+                            if token_id in self.new_to_old:
+                                base_ids.append(self.new_to_old[token_id])
+                            else:
+                                base_ids.append(self.base_tokenizer.unk_token_id or 0)
+                        
+                        return self.base_tokenizer.decode(base_ids, skip_special_tokens=skip_special_tokens, **kwargs)
+                    
+                    def __len__(self):
+                        return self.vocab_size
+                
+                # Create compressed tokenizer
+                tokenizer = CompressedTokenizer(base_tokenizer, compression_info)
+                print(f"✅ Loaded compressed tokenizer: {len(tokenizer):,} tokens")
+                
+            else:
+                # Standard tokenizer
+                tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+                print(f"✅ Loaded standard tokenizer: {len(tokenizer):,} tokens")
+                
+        except Exception as e:
+            print(f"❌ Failed to load tokenizer: {e}")
+            tokenizer = None
     
-    # Create validation split from all data
+    # Fallback to GPT-2 if loading failed
+    if tokenizer is None:
+        print("⚠️  Using GPT-2 fallback tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
+                         "bos_token": "<bos>", "eos_token": "<eos>"}
+        tokens_to_add = {k: v for k, v in special_tokens.items() 
+                        if getattr(tokenizer, k) is None}
+        if tokens_to_add:
+            tokenizer.add_special_tokens(tokens_to_add)
+        print(f"✅ Using GPT-2 fallback: {len(tokenizer):,} tokens")
+    
+    # Create validation split
     all_segments = curriculum_splits.get('stage_1', []) + curriculum_splits.get('stage_2', []) + curriculum_splits.get('stage_3', [])
     if not all_segments:
         all_segments = curriculum_splits.get('all', [])
     
     random.shuffle(all_segments)
-    
     val_size = int(len(all_segments) * val_split)
     val_data = all_segments[:val_size]
     
@@ -100,34 +201,89 @@ def load_data(data_dir: str, val_split: float = 0.1):
 
 
 def create_test_data():
-    """Create minimal test data for ultra-fast testing"""
+    """Create minimal test data for ultra-fast testing - REVISED VERSION"""
+    from collections import Counter
     test_text = """
 Natural selection acts by preservation of beneficial variations. Each modification profitable to the organism.
 The theory of evolution explains the origin of species through gradual change. Evidence supports this view.
 However critics argue against this theory. I contend the evidence is overwhelming.
+Frankenstein was written by Mary Shelley. The creature demands a companion from his creator.
+The novel explores themes of creation and responsibility. Science fiction emerged from this work.
     """.strip()
     
-    # Create minimal pipeline
-    pipeline = TextDataPipeline(n_clusters=2, target_vocab_size=1000, 
-                               enable_argument_mining=True, enable_vocab_curriculum=False)
+    # Create minimal pipeline with vocab curriculum DISABLED
+    pipeline = TextDataPipeline(
+        n_clusters=2, 
+        target_vocab_size=1000,  # Small for testing
+        enable_argument_mining=True, 
+        enable_vocab_curriculum=False  # DISABLED - this was causing issues
+    )
     
     # Process into segments manually for speed
     sentences = [s.strip() for s in test_text.split('.') if s.strip()]
     segments = []
+    
     for i, sentence in enumerate(sentences):
+        # Create realistic difficulty scores
+        lexical_score = 0.3 + (i * 0.1) % 0.7  # Varies between 0.3-0.7
+        syntactic_score = 0.2 + (i * 0.15) % 0.6  # Varies between 0.2-0.6
+        centrality_score = 0.4 + (i * 0.1) % 0.5  # Varies between 0.4-0.7
+        
+        combined_difficulty = (lexical_score + syntactic_score + centrality_score) / 3.0
+        
+        # Assign stages based on difficulty (like real curriculum)
+        if combined_difficulty < 0.4:
+            stage = 1  # Foundation (easy)
+        elif combined_difficulty < 0.6:
+            stage = 2  # Structural (medium)
+        else:
+            stage = 3  # Refinement (hard)
+        
         segment = TextSegment(
             text=sentence,
             index=i,
-            lexical_rarity=0.5,
-            syntactic_complexity=0.5,
-            thematic_centrality=0.5,
-            combined_difficulty=0.5,
-            stage_assignment=1 if i < 2 else 2,
-            length=len(sentence.split())
+            lexical_rarity=lexical_score,
+            syntactic_complexity=syntactic_score,
+            thematic_centrality=centrality_score,
+            combined_difficulty=combined_difficulty,
+            stage_assignment=stage,
+            vocabulary_level=1,  # All use vocab level 1 (simple)
+            length=len(sentence.split()),
+            cluster_id=i % 2,  # Alternate between 2 clusters
+            argumentative_role="claim" if i % 2 == 0 else "evidence",
+            argumentative_confidence=0.7
         )
         segments.append(segment)
     
+    # Set segments in pipeline
     pipeline.segments = segments
+    
+    # Create a simple tokenizer to avoid 50,259 token issues
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    
+    # Add required special tokens
+    special_tokens = {
+        "pad_token": "<pad>", 
+        "mask_token": "<mask>", 
+        "bos_token": "<bos>", 
+        "eos_token": "<eos>"
+    }
+    
+    tokens_to_add = {k: v for k, v in special_tokens.items() 
+                    if getattr(tokenizer, k) is None}
+    
+    if tokens_to_add:
+        tokenizer.add_special_tokens(tokens_to_add)
+    
+    # Set tokenizer in pipeline
+    pipeline.tokenizer = tokenizer
+    
+    print(f"✅ Test data created:")
+    print(f"   Segments: {len(segments)}")
+    print(f"   Stage distribution: {Counter(s.stage_assignment for s in segments)}")
+    print(f"   Tokenizer size: {len(tokenizer):,}")
+    
     return pipeline, segments
 
 

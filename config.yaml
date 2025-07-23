@@ -13,7 +13,7 @@ model:
   n_layers: 12
   n_heads: 12
   d_ff: 2048
-  vocab_size: 25000
+  vocab_size: 4196
   max_seq_len: 512
   dropout: 0.1
   attention_dropout: 0.1

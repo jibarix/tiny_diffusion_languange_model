@@ -37,7 +37,9 @@ def main():
     pipeline = TextDataPipeline(
         embedding_model=args.embedding_model,
         n_clusters=args.clusters,
-        target_vocab_size=args.vocab_size
+        target_vocab_size=args.vocab_size,
+        enable_argument_mining=True,
+        enable_vocab_curriculum=False  # Explicitly disable problematic feature
     )
     
     # Process text file
