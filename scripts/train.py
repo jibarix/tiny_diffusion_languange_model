@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig, GenerationConfig
+from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig, GenerationConfig, load_config_with_overrides
 from model.diffusion import MaskedDiffusionLM
 from training.trainer import EnhancedCurriculumTrainer
 from data.pipeline import TextDataPipeline, TextSegment

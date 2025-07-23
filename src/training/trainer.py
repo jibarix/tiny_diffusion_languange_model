@@ -1,5 +1,5 @@
 """
-Enhanced Curriculum Trainer with Dynamic Adaptation - FIXED VERSION
+Enhanced Curriculum Trainer with Dynamic Adaptation - REVISED VERSION
 Implements research-aligned curriculum learning for diffusion models
 """
 
@@ -20,6 +20,8 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
+# FIXED: Add missing imports
+from config import ProjectConfig
 from training.scheduler import CurriculumScheduler
 from training.metrics import TrainingMetrics
 from training.format_datasets import SentenceDataset, PairDataset, ParagraphDataset
@@ -30,19 +32,19 @@ from data.pipeline import TextSegment, ArgumentMiner
 class AdaptiveCurriculumScheduler:
     """Enhanced scheduler with dynamic adaptation"""
     
-    def __init__(self, curriculum_config, pipeline, training_config):  # Add training_config parameter
+    def __init__(self, curriculum_config, pipeline, training_config):
         self.config = curriculum_config
         self.pipeline = pipeline
         self.current_stage = 0
         self.current_vocab_level = 1
         self.stage_performance_history = defaultdict(list)
-        self.adaptation_window = training_config.adaptation_window  # Now properly referenced
-        self.improvement_threshold = training_config.improvement_threshold
         
-        # Stage transition criteria
-        self.min_epochs_per_stage = training_config.min_epochs_per_stage
-        self.max_epochs_per_stage = training_config.max_epochs_per_stage
-        self.performance_plateau_epochs = training_config.performance_plateau_epochs
+        # FIXED: Proper configuration access with validation
+        self.adaptation_window = getattr(training_config, 'adaptation_window', 10)
+        self.improvement_threshold = getattr(training_config, 'improvement_threshold', 0.01)
+        self.min_epochs_per_stage = getattr(training_config, 'min_epochs_per_stage', 5)
+        self.max_epochs_per_stage = getattr(training_config, 'max_epochs_per_stage', 200)
+        self.performance_plateau_epochs = getattr(training_config, 'performance_plateau_epochs', 10)
         
     def should_advance_stage(self, epoch: int, recent_losses: List[float]) -> bool:
         """Determine if we should move to next curriculum stage"""
@@ -75,7 +77,12 @@ class AdaptiveCurriculumScheduler:
     
     def get_current_masking_rate(self, epoch_in_stage: int, total_stage_epochs: int) -> float:
         """Get masking rate for current stage and progress"""
-        stage_config = self.config.stages[self.current_stage]
+        if self.current_stage >= len(self.config.stages):
+            # Fallback to last stage config
+            stage_config = self.config.stages[-1]
+        else:
+            stage_config = self.config.stages[self.current_stage]
+            
         min_rate, max_rate = stage_config.masking_rate_range
         
         # Linear decrease from max to min over the stage
@@ -90,7 +97,7 @@ class ArgumentPairDataset(Dataset):
         self.pairs = argument_pairs
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.sep_token = tokenizer.sep_token or " [SEP] "
+        self.sep_token = getattr(tokenizer, 'sep_token', None) or " [SEP] "
     
     def __len__(self):
         return len(self.pairs)
@@ -168,14 +175,17 @@ class SelfTrainingDataset(Dataset):
 
 
 class EnhancedCurriculumTrainer:
-    """Main trainer with enhanced curriculum learning"""
+    """Main trainer with enhanced curriculum learning - REVISED VERSION"""
     
     def __init__(self,
                  model: MaskedDiffusionLM,
                  pipeline,  # Enhanced TextDataPipeline
                  val_data: List,
-                 config,
+                 config: ProjectConfig,  # FIXED: Add proper type hint
                  output_dir: str):
+        
+        # FIXED: Add configuration validation
+        self._validate_config(config)
         
         self.model = model
         self.pipeline = pipeline
@@ -203,6 +213,7 @@ class EnhancedCurriculumTrainer:
         
         # Stage-specific tokenizers
         self.tokenizers = {}
+        self.vocab_curriculum_active = False
         self.load_stage_tokenizers()
         
         # Setup training components
@@ -217,6 +228,33 @@ class EnhancedCurriculumTrainer:
         self.device = torch.device(config.device if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
         
+    def _validate_config(self, config: ProjectConfig):
+        """FIXED: Add comprehensive configuration validation"""
+        if not hasattr(config, 'training'):
+            raise ValueError("Config missing 'training' section")
+        if not hasattr(config, 'curriculum'):
+            raise ValueError("Config missing 'curriculum' section")
+        if not hasattr(config, 'model'):
+            raise ValueError("Config missing 'model' section")
+            
+        # Validate required training attributes
+        required_training_attrs = [
+            'batch_size', 'learning_rate', 'max_epochs', 'gradient_accumulation_steps'
+        ]
+        for attr in required_training_attrs:
+            if not hasattr(config.training, attr):
+                raise ValueError(f"Config.training missing required attribute: {attr}")
+                
+        # Validate required curriculum attributes
+        if not hasattr(config.curriculum, 'stages') or len(config.curriculum.stages) == 0:
+            raise ValueError("Config.curriculum must have at least one stage")
+            
+        # Validate required model attributes
+        required_model_attrs = ['d_model', 'n_layers', 'n_heads', 'max_seq_len']
+        for attr in required_model_attrs:
+            if not hasattr(config.model, attr):
+                raise ValueError(f"Config.model missing required attribute: {attr}")
+    
     def load_stage_tokenizers(self):
         """Load tokenizers for different vocabulary levels"""
         # First, try to load vocabulary curriculum tokenizers
@@ -232,7 +270,9 @@ class EnhancedCurriculumTrainer:
         
         if vocab_curriculum_exists:
             print("🔧 Loading vocabulary curriculum tokenizers...")
-            # Original vocabulary curriculum code
+            self.vocab_curriculum_active = True
+            
+            # Load vocabulary curriculum tokenizers
             for level in range(1, 6):
                 tokenizer_path = data_dir / f"tokenizer_level_{level}"
                 if tokenizer_path.exists():
@@ -246,6 +286,8 @@ class EnhancedCurriculumTrainer:
                     print(f"Using fallback tokenizer for level {level}: {len(fallback_tokenizer):,} tokens")
         else:
             print("🔧 No vocabulary curriculum found - using single tokenizer for all levels")
+            self.vocab_curriculum_active = False
+            
             # Use the pipeline's tokenizer (should be the compressed one) for all levels
             main_tokenizer = self.pipeline.tokenizer or self.create_default_tokenizer()
             for level in range(1, 6):
@@ -313,6 +355,68 @@ class EnhancedCurriculumTrainer:
         # Reinitialize optimizer to include new parameters
         self._setup_optimizer()
 
+    def create_default_tokenizer(self):
+        """Create default tokenizer if none available"""
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        
+        special_tokens = {
+            "pad_token": "<pad>",
+            "mask_token": "<mask>",
+            "bos_token": "<bos>",
+            "eos_token": "<eos>"
+        }
+        
+        tokens_to_add = {}
+        for key, token in special_tokens.items():
+            if getattr(tokenizer, key) is None:
+                tokens_to_add[key] = token
+        
+        if tokens_to_add:
+            tokenizer.add_special_tokens(tokens_to_add)
+        
+        return tokenizer
+    
+    def get_stage_data_with_fallback(self, stage: int, vocab_level: int) -> List[TextSegment]:
+        """Get stage data with progressive fallback to ensure non-empty dataset"""
+        # Try exact filtering first
+        segments = [s for s in self.pipeline.segments 
+                   if s.stage_assignment == stage and s.vocabulary_level <= vocab_level]
+        
+        if len(segments) > 0:
+            self.logger.info(f"Found {len(segments)} segments for stage {stage}, vocab level {vocab_level}")
+            return segments
+        
+        self.logger.warning(f"No segments found for stage {stage}, vocab level {vocab_level}. Trying fallbacks...")
+        
+        # Fallback 1: Ignore vocabulary level restriction
+        segments = [s for s in self.pipeline.segments if s.stage_assignment == stage]
+        if len(segments) > 0:
+            self.logger.info(f"Fallback 1: Found {len(segments)} segments for stage {stage} (ignoring vocab level)")
+            return segments
+        
+        # Fallback 2: Use all segments if stage filtering fails
+        segments = self.pipeline.segments
+        self.logger.warning(f"Fallback 2: Using all {len(segments)} segments (ignoring stage and vocab filtering)")
+        
+        # If still empty, create minimal test data
+        if len(segments) == 0:
+            self.logger.error("No segments available! Creating minimal test data...")
+            test_segment = TextSegment(
+                text="This is a test sentence for training.",
+                index=0,
+                lexical_rarity=0.5,
+                syntactic_complexity=0.5,
+                thematic_centrality=0.5,
+                combined_difficulty=0.5,
+                stage_assignment=stage,
+                vocabulary_level=vocab_level,
+                length=7
+            )
+            segments = [test_segment]
+        
+        return segments
+    
     def create_stage_dataloader(self, stage: int, vocab_level: int, batch_size: int) -> DataLoader:
         """Create curriculum-aware dataloader for specific stage with fallback"""
         
@@ -320,10 +424,9 @@ class EnhancedCurriculumTrainer:
         tokenizer = self.tokenizers.get(vocab_level, self.tokenizers[1])
         
         # Validate model-tokenizer compatibility (only if vocab curriculum is active)
-        if hasattr(self, 'vocab_curriculum_active') and self.vocab_curriculum_active:
+        if self.vocab_curriculum_active:
             self.validate_model_vocab_compatibility(tokenizer, stage, vocab_level)
         
-        # Rest of the method stays the same...
         if stage == 1:
             # Foundation: Individual sentences
             segments = self.get_stage_data_with_fallback(stage, vocab_level)
@@ -364,11 +467,12 @@ class EnhancedCurriculumTrainer:
             pseudo_texts = []
             if hasattr(self, 'stage_2_model_path') and os.path.exists(self.stage_2_model_path):
                 stage_2_segments = self.get_stage_data_with_fallback(2, vocab_level)
+                pseudo_max_samples = getattr(self.config.curriculum, 'pseudo_data_max_samples', 100)
+                pseudo_ratio = getattr(self.config.curriculum, 'pseudo_data_ratio', 0.25)
+                
                 pseudo_texts = self.pipeline.generate_pseudo_data(
-                    None, stage_2_segments, num_samples=min(
-                        getattr(self.config.curriculum, 'pseudo_data_max_samples', 100),
-                        int(len(segments) * getattr(self.config.curriculum, 'pseudo_data_ratio', 0.25))
-                    )
+                    None, stage_2_segments, 
+                    num_samples=min(pseudo_max_samples, int(len(segments) * pseudo_ratio))
                 )
             
             dataset = SelfTrainingDataset(segments, pseudo_texts, tokenizer, self.config.model.max_seq_len)
@@ -380,36 +484,18 @@ class EnhancedCurriculumTrainer:
         if len(dataset) == 0:
             raise ValueError(f"Dataset is empty for stage {stage}, vocab level {vocab_level}")
         
+        # FIXED: Use config values with proper fallbacks
+        num_workers = getattr(self.config.training, 'dataloader_num_workers', 4)
+        pin_memory = getattr(self.config.training, 'pin_memory', True)
+        
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=self.config.training.dataloader_num_workers,
-            pin_memory=self.config.training.pin_memory,
-            drop_last=True if len(dataset) > batch_size else False  # Don't drop last if dataset is small
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            drop_last=True if len(dataset) > batch_size else False
         )
-    
-    def create_default_tokenizer(self):
-        """Create default tokenizer if none available"""
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
-        
-        special_tokens = {
-            "pad_token": "<pad>",
-            "mask_token": "<mask>",
-            "bos_token": "<bos>",
-            "eos_token": "<eos>"
-        }
-        
-        tokens_to_add = {}
-        for key, token in special_tokens.items():
-            if getattr(tokenizer, key) is None:
-                tokens_to_add[key] = token
-        
-        if tokens_to_add:
-            tokenizer.add_special_tokens(tokens_to_add)
-        
-        return tokenizer
     
     def _setup_optimizer(self):
         """Initialize optimizer with curriculum-aware scheduling"""
@@ -419,7 +505,7 @@ class EnhancedCurriculumTrainer:
             {
                 'params': [p for n, p in self.model.named_parameters() 
                           if not any(nd in n for nd in no_decay)],
-                'weight_decay': self.config.training.weight_decay,
+                'weight_decay': getattr(self.config.training, 'weight_decay', 0.1),
             },
             {
                 'params': [p for n, p in self.model.named_parameters() 
@@ -431,16 +517,22 @@ class EnhancedCurriculumTrainer:
         self.optimizer = torch.optim.AdamW(
             optimizer_grouped_parameters,
             lr=self.config.training.learning_rate,
-            betas=(self.config.training.beta1, self.config.training.beta2),
-            eps=self.config.training.eps
+            betas=(
+                getattr(self.config.training, 'beta1', 0.9),
+                getattr(self.config.training, 'beta2', 0.95)
+            ),
+            eps=getattr(self.config.training, 'eps', 1e-8)
         )
         
         # Dynamic learning rate scheduler
+        restart_period = getattr(self.config.training, 'scheduler_restart_period', 1000)
+        min_lr = getattr(self.config.training, 'min_learning_rate', 2e-5)
+        
         self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=self.config.training.scheduler_restart_period,  # Will be adjusted per stage
+            T_0=restart_period,
             T_mult=2,
-            eta_min=self.config.training.min_learning_rate
+            eta_min=min_lr
         )
         
     def _setup_logging(self):
@@ -498,118 +590,10 @@ class EnhancedCurriculumTrainer:
         
     def _setup_mixed_precision(self):
         """Setup mixed precision training"""
-        self.use_amp = self.config.training.use_mixed_precision and torch.cuda.is_available()
+        use_mixed_precision = getattr(self.config.training, 'use_mixed_precision', True)
+        self.use_amp = use_mixed_precision and torch.cuda.is_available()
         if self.use_amp:
             self.scaler = GradScaler()
-    
-    def get_stage_data_with_fallback(self, stage: int, vocab_level: int) -> List[TextSegment]:
-        """Get stage data with progressive fallback to ensure non-empty dataset"""
-        # Try exact filtering first
-        segments = [s for s in self.pipeline.segments 
-                   if s.stage_assignment == stage and s.vocabulary_level <= vocab_level]
-        
-        if len(segments) > 0:
-            self.logger.info(f"Found {len(segments)} segments for stage {stage}, vocab level {vocab_level}")
-            return segments
-        
-        self.logger.warning(f"No segments found for stage {stage}, vocab level {vocab_level}. Trying fallbacks...")
-        
-        # Fallback 1: Ignore vocabulary level restriction
-        segments = [s for s in self.pipeline.segments if s.stage_assignment == stage]
-        if len(segments) > 0:
-            self.logger.info(f"Fallback 1: Found {len(segments)} segments for stage {stage} (ignoring vocab level)")
-            return segments
-        
-        # Fallback 2: Use all segments if stage filtering fails
-        segments = self.pipeline.segments
-        self.logger.warning(f"Fallback 2: Using all {len(segments)} segments (ignoring stage and vocab filtering)")
-        
-        # If still empty, create minimal test data
-        if len(segments) == 0:
-            self.logger.error("No segments available! Creating minimal test data...")
-            test_segment = TextSegment(
-                text="This is a test sentence for training.",
-                index=0,
-                lexical_rarity=0.5,
-                syntactic_complexity=0.5,
-                thematic_centrality=0.5,
-                combined_difficulty=0.5,
-                stage_assignment=stage,
-                vocabulary_level=vocab_level,
-                length=7
-            )
-            segments = [test_segment]
-        
-        return segments
-    
-    def create_stage_dataloader(self, stage: int, vocab_level: int, batch_size: int) -> DataLoader:
-        """Create curriculum-aware dataloader for specific stage with fallback"""
-        tokenizer = self.tokenizers.get(vocab_level, self.tokenizers[1])
-        
-        if stage == 1:
-            # Foundation: Individual sentences
-            segments = self.get_stage_data_with_fallback(stage, vocab_level)
-            dataset = SentenceDataset(segments, tokenizer, self.config.model.max_seq_len)
-            
-        elif stage == 2:
-            # Structural: Argument pairs
-            pairs = self.pipeline.get_argument_pairs(stage)
-            
-            # Filter by vocabulary level with fallback
-            filtered_pairs = []
-            for evidence, claim in pairs:
-                if (evidence.vocabulary_level <= vocab_level and 
-                    claim.vocabulary_level <= vocab_level):
-                    filtered_pairs.append((evidence, claim))
-            
-            # Fallback: If no pairs found, create pairs from available segments
-            if len(filtered_pairs) == 0:
-                segments = self.get_stage_data_with_fallback(stage, vocab_level)
-                self.logger.warning(f"No argument pairs found. Creating pairs from {len(segments)} segments")
-                
-                # Create simple pairs from consecutive segments
-                for i in range(0, len(segments) - 1, 2):
-                    if i + 1 < len(segments):
-                        filtered_pairs.append((segments[i], segments[i + 1]))
-                
-                # If still no pairs, duplicate segments
-                if len(filtered_pairs) == 0 and segments:
-                    filtered_pairs = [(segments[0], segments[0])]
-            
-            dataset = ArgumentPairDataset(filtered_pairs, tokenizer, self.config.model.max_seq_len)
-            
-        elif stage == 3:
-            # Refinement: Full paragraphs + pseudo data
-            segments = self.get_stage_data_with_fallback(stage, vocab_level)
-            
-            # Generate pseudo data if we have a trained model
-            pseudo_texts = []
-            if hasattr(self, 'stage_2_model_path') and os.path.exists(self.stage_2_model_path):
-                stage_2_segments = self.get_stage_data_with_fallback(2, vocab_level)
-                pseudo_texts = self.pipeline.generate_pseudo_data(
-                    None, stage_2_segments, num_samples=min(
-                        getattr(self.config.curriculum, 'pseudo_data_max_samples', 100),
-                        int(len(segments) * getattr(self.config.curriculum, 'pseudo_data_ratio', 0.25))
-                    )
-                )
-            
-            dataset = SelfTrainingDataset(segments, pseudo_texts, tokenizer, self.config.model.max_seq_len)
-            
-        else:
-            raise ValueError(f"Invalid stage: {stage}")
-        
-        # Ensure dataset is not empty
-        if len(dataset) == 0:
-            raise ValueError(f"Dataset is empty for stage {stage}, vocab level {vocab_level}")
-        
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=self.config.training.dataloader_num_workers,
-            pin_memory=self.config.training.pin_memory,
-            drop_last=True if len(dataset) > batch_size else False  # Don't drop last if dataset is small
-        )
     
     def train_epoch(self, dataloader: DataLoader, stage: int, vocab_level: int) -> Dict[str, float]:
         """Train one epoch with dynamic difficulty updates"""
@@ -621,6 +605,11 @@ class EnhancedCurriculumTrainer:
         batch_losses = []
         batch_grad_norms = []
         
+        # FIXED: Get config values with proper fallbacks
+        gradient_accumulation_steps = getattr(self.config.training, 'gradient_accumulation_steps', 1)
+        grad_clip_norm = getattr(self.config.training, 'grad_clip_norm', 1.0)
+        log_every = getattr(self.config.training, 'log_every', 100)
+        
         for batch_idx, batch in enumerate(dataloader):
             # Move to device
             input_ids = batch['input_ids'].to(self.device)
@@ -629,11 +618,11 @@ class EnhancedCurriculumTrainer:
             # Get dynamic masking rate
             masking_rate = self.curriculum_scheduler.get_current_masking_rate(
                 self.current_epoch - self.stage_start_epoch,
-                self.config.curriculum.stages[stage-1].epochs
+                self.config.curriculum.stages[stage-1].epochs if stage <= len(self.config.curriculum.stages) else 50
             )
             
             # Zero gradients
-            if batch_idx % self.config.training.gradient_accumulation_steps == 0:
+            if batch_idx % gradient_accumulation_steps == 0:
                 self.optimizer.zero_grad()
             
             # Forward pass with mixed precision
@@ -646,7 +635,7 @@ class EnhancedCurriculumTrainer:
                 loss = self.model.compute_loss(outputs)
                 
                 # Scale loss for gradient accumulation
-                loss = loss / self.config.training.gradient_accumulation_steps
+                loss = loss / gradient_accumulation_steps
             
             # Backward pass
             if self.use_amp:
@@ -655,7 +644,7 @@ class EnhancedCurriculumTrainer:
                 loss.backward()
             
             # Collect gradient norms for dynamic difficulty
-            if batch_idx % self.config.training.gradient_accumulation_steps == 0:
+            if batch_idx % gradient_accumulation_steps == 0:
                 total_grad_norm = 0.0
                 for param in self.model.parameters():
                     if param.grad is not None:
@@ -665,17 +654,11 @@ class EnhancedCurriculumTrainer:
                 # Update weights
                 if self.use_amp:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), 
-                        self.config.training.grad_clip_norm
-                    )
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), 
-                        self.config.training.grad_clip_norm
-                    )
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
                     self.optimizer.step()
                 
                 self.lr_scheduler.step()
@@ -685,12 +668,12 @@ class EnhancedCurriculumTrainer:
                 batch_grad_norms.append(total_grad_norm)
             
             # Track metrics
-            epoch_metrics['loss'] += loss.item() * self.config.training.gradient_accumulation_steps
+            epoch_metrics['loss'] += loss.item() * gradient_accumulation_steps
             epoch_metrics['num_batches'] += 1
-            batch_losses.append(loss.item() * self.config.training.gradient_accumulation_steps)
+            batch_losses.append(loss.item() * gradient_accumulation_steps)
             
             # Log progress
-            if self.global_step % self.config.training.log_every == 0:
+            if self.global_step % log_every == 0:
                 lr = self.lr_scheduler.get_last_lr()[0]
                 self.logger.info(
                     f"Stage {stage}, Vocab {vocab_level}, Step {self.global_step}: "
@@ -707,7 +690,7 @@ class EnhancedCurriculumTrainer:
         # Update dynamic difficulty scores
         if hasattr(self, 'pipeline') and len(batch_losses) > 0:
             # Only update when we have gradient norms (every gradient_accumulation_steps)
-            if batch_idx % self.config.training.gradient_accumulation_steps == 0 and len(batch_grad_norms) > 0:
+            if batch_idx % gradient_accumulation_steps == 0 and len(batch_grad_norms) > 0:
                 # Use the most recent loss and gradient norm
                 recent_loss = batch_losses[-1]
                 recent_grad_norm = batch_grad_norms[-1]
@@ -736,9 +719,13 @@ class EnhancedCurriculumTrainer:
         # Use Stage 1 format for validation
         tokenizer = self.tokenizers[1]
         val_dataset = SentenceDataset(self.val_data, tokenizer, self.config.model.max_seq_len)
+        
+        # FIXED: Get validation batch size from config
+        val_batch_size = getattr(self.config.training, 'val_batch_size_actual', self.config.training.batch_size)
+        
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=self.config.training.val_batch_size_actual,
+            batch_size=val_batch_size,
             shuffle=False,
             num_workers=2
         )
@@ -746,6 +733,9 @@ class EnhancedCurriculumTrainer:
         total_loss = 0.0
         total_tokens = 0
         num_batches = 0
+        
+        # FIXED: Get validation masking rate from config
+        validation_masking_rate = getattr(self.config.training, 'validation_masking_rate', 0.15)
         
         for batch in val_dataloader:
             input_ids = batch['input_ids'].to(self.device)
@@ -755,7 +745,7 @@ class EnhancedCurriculumTrainer:
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                masking_rate=self.config.training.validation_masking_rate
+                masking_rate=validation_masking_rate
             )
             loss = self.model.compute_loss(outputs)
             
@@ -817,7 +807,9 @@ class EnhancedCurriculumTrainer:
         """Enhanced curriculum training with dynamic adaptation"""
         self.logger.info("Starting enhanced curriculum training...")
         
-        recent_losses = deque(maxlen=self.config.training.loss_history_window)
+        # FIXED: Get loss history window from config
+        loss_history_window = getattr(self.config.training, 'loss_history_window', 20)
+        recent_losses = deque(maxlen=loss_history_window)
         
         try:
             # Training loop through curriculum stages
@@ -857,7 +849,8 @@ class EnhancedCurriculumTrainer:
                         continue
                     
                     # Reset optimizer for new stage
-                    if stage > 1 and vocab_level == 1 and self.config.curriculum.reset_optimizer:
+                    reset_optimizer = getattr(self.config.curriculum, 'reset_optimizer', True)
+                    if stage > 1 and vocab_level == 1 and reset_optimizer:
                         self._setup_optimizer()
                         self.logger.info("Optimizer reset for new stage")
                     
@@ -880,8 +873,11 @@ class EnhancedCurriculumTrainer:
                         
                         recent_losses.append(train_metrics['loss'])
                         
+                        # FIXED: Get validation frequency from config
+                        validation_frequency = getattr(self.config.training, 'validation_frequency', 5)
+                        
                         # Validate periodically
-                        if self.current_epoch % self.config.training.validation_frequency == 0:
+                        if self.current_epoch % validation_frequency == 0:
                             val_metrics = self.validate()
                             
                             # Check for best model
@@ -914,8 +910,11 @@ class EnhancedCurriculumTrainer:
                             self.logger.info(f"Stage {stage} completed after {total_stage_epochs} epochs")
                             break
                         
+                        # FIXED: Get save frequency from config
+                        save_every = getattr(self.config.training, 'save_every', 5000)
+                        
                         # Save checkpoint
-                        if self.global_step % self.config.training.save_every == 0:
+                        if self.global_step % save_every == 0:
                             self.save_checkpoint(stage, vocab_level)
                     
                     # Break out of vocab level loop if stage is complete
@@ -941,7 +940,7 @@ class EnhancedCurriculumTrainer:
             'stage_performance_history': dict(self.curriculum_scheduler.stage_performance_history),
             'final_stage': self.curriculum_scheduler.current_stage,
             'final_vocab_level': self.curriculum_scheduler.current_vocab_level,
-            'pipeline_state': self.pipeline.dynamic_scorer.__dict__
+            'pipeline_state': self.pipeline.dynamic_scorer.__dict__ if hasattr(self.pipeline, 'dynamic_scorer') else {}
         }
         
         with open(self.output_dir / 'curriculum_final_state.pkl', 'wb') as f:
