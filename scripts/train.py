@@ -14,15 +14,16 @@ from pathlib import Path
 import torch
 import numpy as np
 from transformers import AutoTokenizer
-from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig
 
-
+# Add src to path (matches prepare_data.py)
+sys.path.append(str(Path(__file__).parent.parent / "src"))
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import ProjectConfig
-from src.model.diffusion import MaskedDiffusionLM
-from src.training.trainer import CurriculumTrainer
-from src.training.scheduler import CurriculumScheduler
+from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig
+from model.diffusion import MaskedDiffusionLM
+from training.trainer import CurriculumTrainer
+from training.scheduler import CurriculumScheduler
+from data.pipeline import TextSegment
 
 
 def set_seed(seed: int):
@@ -32,6 +33,24 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+
+
+def create_model(config: ProjectConfig, tokenizer) -> MaskedDiffusionLM:
+    """Create model from config"""
+    return MaskedDiffusionLM(
+        vocab_size=len(tokenizer),
+        d_model=config.model.d_model,
+        n_layers=config.model.n_layers,
+        n_heads=config.model.n_heads,
+        d_ff=config.model.d_ff,
+        max_seq_len=config.model.max_seq_len,
+        dropout=config.model.dropout,
+        attention_dropout=config.model.attention_dropout,
+        use_bias=config.model.use_bias,
+        norm_eps=config.model.norm_eps,
+        pad_token_id=tokenizer.pad_token_id,
+        mask_token_id=tokenizer.mask_token_id
+    )
 
 
 def load_data(data_dir: str, val_split: float = 0.1):
@@ -57,49 +76,20 @@ def load_data(data_dir: str, val_split: float = 0.1):
     
     train_splits = {}
     for split_name, segments in curriculum_splits.items():
-        # Filter out validation segments
-        if split_name == 'all':
-            train_splits[split_name] = all_segments[val_size:]
-        else:
-            # For other splits, filter based on indices in 'all' split
-            segment_indices = {id(seg): i for i, seg in enumerate(all_segments)}
-            filtered_segments = []
-            for seg in segments:
-                if id(seg) in segment_indices:
-                    idx = segment_indices[id(seg)]
-                    if idx in train_indices:
-                        filtered_segments.append(seg)
+        if split_name != 'all':
+            # Keep only segments not in validation
+            filtered_segments = [seg for i, seg in enumerate(segments) 
+                               if (i + val_size) in train_indices or i >= val_size]
             train_splits[split_name] = filtered_segments
     
     return train_splits, val_data, tokenizer
 
 
-def create_model(config: ProjectConfig, tokenizer) -> MaskedDiffusionLM:
-    """Create and initialize the diffusion model"""
-    model = MaskedDiffusionLM(
-        vocab_size=len(tokenizer),
-        d_model=config.model.d_model,
-        n_layers=config.model.n_layers,
-        n_heads=config.model.n_heads,
-        d_ff=config.model.d_ff,
-        max_seq_len=config.model.max_seq_len,
-        dropout=config.model.dropout,
-        attention_dropout=config.model.attention_dropout,
-        use_bias=config.model.use_bias,
-        norm_eps=config.model.norm_eps,
-        pad_token_id=tokenizer.pad_token_id,
-        mask_token_id=tokenizer.mask_token_id
-    )
-    
-    print(f"Model created: {model.get_num_params():,} parameters")
-    return model
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Train masked diffusion language model")
+    parser = argparse.ArgumentParser(description="Train curriculum diffusion model")
     parser.add_argument("--config", default="config.yaml", help="Config file path")
     parser.add_argument("--data-dir", default="data/processed", help="Processed data directory")
-    parser.add_argument("--output-dir", default="outputs", help="Output directory")
+    parser.add_argument("--output", default="outputs", help="Output directory")
     parser.add_argument("--resume", help="Resume from checkpoint")
     parser.add_argument("--debug", action="store_true", help="Use debug config")
     
@@ -120,7 +110,7 @@ def main():
     set_seed(config.seed)
     
     # Setup output directory
-    output_dir = Path(args.output_dir) / config.experiment_name
+    output_dir = Path(args.output) / config.experiment_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"🚀 Starting training: {config.experiment_name}")
