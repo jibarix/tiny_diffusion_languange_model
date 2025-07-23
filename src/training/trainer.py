@@ -36,12 +36,12 @@ class AdaptiveCurriculumScheduler:
         self.current_stage = 0
         self.current_vocab_level = 1
         self.stage_performance_history = defaultdict(list)
-        self.adaptation_window = 10
+        self.adaptation_window = training_config.adaptation_window
         self.improvement_threshold = 0.01
         
         # Stage transition criteria
-        self.min_epochs_per_stage = 5
-        self.max_epochs_per_stage = 200
+        self.min_epochs_per_stage = training_config.min_epochs_per_stage
+        self.max_epochs_per_stage = training_config.max_epochs_per_stage
         self.performance_plateau_epochs = 10
         
     def should_advance_stage(self, epoch: int, recent_losses: List[float]) -> bool:
@@ -755,7 +755,7 @@ class EnhancedCurriculumTrainer:
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                masking_rate=0.15
+                masking_rate=self.config.training.validation_masking_rate
             )
             loss = self.model.compute_loss(outputs)
             
@@ -881,7 +881,7 @@ class EnhancedCurriculumTrainer:
                         recent_losses.append(train_metrics['loss'])
                         
                         # Validate periodically
-                        if self.current_epoch % 5 == 0:
+                        if self.current_epoch % self.config.training.validation_frequency == 0:
                             val_metrics = self.validate()
                             
                             # Check for best model

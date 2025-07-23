@@ -1,7 +1,7 @@
 """
-Enhanced Data Processing Pipeline - Research-Aligned Version
+Enhanced Data Processing Pipeline - Configuration-Driven Version
 Text → sentences → multi-dimensional difficulty → curriculum → dataset
-Implements advanced curriculum learning for diffusion models
+All hardcoded values moved to PipelineConfig
 """
 
 import os
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import math
 from collections import defaultdict, Counter
 
+import torch
 import nltk
 import spacy
 import textstat
@@ -22,6 +23,9 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
+
+# Import the new configuration
+from config.pipeline_config import PipelineConfig
 
 try:
     nltk.data.find('tokenizers/punkt')
@@ -74,9 +78,11 @@ class VocabularyCurriculum:
 
 
 class ArgumentMiner:
-    """Simple rule-based argument mining for scientific text"""
+    """Rule-based argument mining for scientific text"""
     
-    def __init__(self):
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        
         # Patterns for identifying argumentative roles
         self.claim_patterns = [
             r'\b(i argue|i contend|i propose|it follows|therefore|thus|hence)\b',
@@ -123,19 +129,19 @@ class ArgumentMiner:
             'rebuttal': self._count_patterns(sentence_lower, self.rebuttal_patterns)
         }
         
-        # Add heuristics
+        # Add heuristics using config values
         if sentence.endswith('?'):
-            scores['claim'] += 0.5
-        if 'because' in sentence_lower or 'since' in sentence_lower:
-            scores['warrant'] += 1.0
+            scores['claim'] += self.config.question_claim_bonus
+        if any(word in sentence_lower for word in ['because', 'since']):
+            scores['warrant'] += self.config.argument_pattern_bonus
         if any(word in sentence_lower for word in ['data', 'observation', 'experiment']):
-            scores['evidence'] += 1.0
+            scores['evidence'] += self.config.argument_pattern_bonus
             
         # Find best role
         best_role = max(scores.keys(), key=lambda k: scores[k])
         confidence = scores[best_role] / max(sum(scores.values()), 1.0)
         
-        return best_role, confidence
+        return best_role, max(confidence, self.config.min_argument_confidence)
     
     def _count_patterns(self, text: str, patterns: List[str]) -> float:
         """Count pattern matches in text"""
@@ -148,8 +154,8 @@ class ArgumentMiner:
 class DynamicDifficultyScorer:
     """Updates difficulty scores based on model training dynamics"""
     
-    def __init__(self, alpha: float = 0.9):
-        self.alpha = alpha  # Exponential moving average factor
+    def __init__(self, config: PipelineConfig):
+        self.config = config
         self.loss_history = defaultdict(list)
         self.gradient_history = defaultdict(list)
     
@@ -170,11 +176,11 @@ class DynamicDifficultyScorer:
             return 0.5
         
         # Use exponential moving average of recent losses
-        weights = [self.alpha ** (len(losses) - i - 1) for i in range(len(losses))]
+        weights = [self.config.ema_alpha ** (len(losses) - i - 1) for i in range(len(losses))]
         weighted_loss = sum(w * l for w, l in zip(weights, losses)) / sum(weights)
         
-        # Normalize to [0, 1] range (higher loss = higher difficulty)
-        return min(1.0, weighted_loss / 10.0)  # Assuming max reasonable loss ~10
+        # Normalize using config value
+        return min(1.0, weighted_loss / self.config.loss_normalization_factor)
     
     def get_gradient_difficulty(self, segment_id: int) -> float:
         """Get gradient-based difficulty score"""
@@ -187,33 +193,46 @@ class DynamicDifficultyScorer:
         
         # Higher gradient norm = model learning more = higher difficulty
         avg_grad = np.mean(grads[-5:])  # Use recent gradient norms
-        return min(1.0, avg_grad / 1.0)  # Normalize assuming max grad ~1.0
+        return min(1.0, avg_grad / self.config.gradient_normalization_factor)
 
 
 class TextDataPipeline:
-    """Enhanced pipeline with advanced curriculum learning"""
+    """Enhanced pipeline with configuration-driven processing"""
     
     def __init__(self, 
-                 embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-                 n_clusters: int = 8,
+                 pipeline_config: PipelineConfig = None,
+                 embedding_model: str = None,
+                 n_clusters: int = None,
                  target_vocab_size: int = 25000,
                  enable_argument_mining: bool = True,
                  enable_vocab_curriculum: bool = True):
         
-        self.embedding_model_name = embedding_model
-        self.n_clusters = n_clusters
+        # Use provided config or create default
+        self.config = pipeline_config or PipelineConfig.default()
+        
+        # Override config with explicit parameters if provided
+        if embedding_model:
+            self.embedding_model_name = embedding_model
+        else:
+            self.embedding_model_name = self.config.embedding_model_default
+            
+        if n_clusters:
+            self.n_clusters = n_clusters
+        else:
+            self.n_clusters = self.config.default_n_clusters
+            
         self.target_vocab_size = target_vocab_size
         self.enable_argument_mining = enable_argument_mining
         self.enable_vocab_curriculum = enable_vocab_curriculum
         
         # Initialize models
         self.nlp = spacy.load("en_core_web_sm")
-        self.embedding_model = SentenceTransformer(embedding_model)
+        self.embedding_model = SentenceTransformer(self.embedding_model_name)
         self.tokenizer = None
         
-        # Advanced components
-        self.argument_miner = ArgumentMiner() if enable_argument_mining else None
-        self.dynamic_scorer = DynamicDifficultyScorer()
+        # Advanced components (now config-driven)
+        self.argument_miner = ArgumentMiner(self.config) if enable_argument_mining else None
+        self.dynamic_scorer = DynamicDifficultyScorer(self.config)
         self.vocab_curriculum = VocabularyCurriculum() if enable_vocab_curriculum else None
         
         # Data storage
@@ -221,7 +240,7 @@ class TextDataPipeline:
         self.embeddings: np.ndarray = None
         self.cluster_model = None
         
-        # Curriculum weights (adjustable)
+        # Curriculum weights (adjustable via config in future versions)
         self.lexical_weight = 0.25
         self.syntactic_weight = 0.25
         self.centrality_weight = 0.25
@@ -241,14 +260,15 @@ class TextDataPipeline:
         return text
     
     def segment_text(self, text: str) -> List[str]:
-        """Segment text into sentences"""
+        """Segment text into sentences using config thresholds"""
         sentences = nltk.sent_tokenize(text)
         
-        # Filter and clean
+        # Filter and clean using config values
         cleaned_sentences = []
         for s in sentences:
             s = s.strip()
-            if len(s) > 20 and len(s.split()) >= 5:  # Minimum viable sentences
+            if (len(s) > self.config.min_sentence_length and 
+                len(s.split()) >= self.config.min_sentence_words):
                 cleaned_sentences.append(s)
         
         return cleaned_sentences
@@ -268,14 +288,14 @@ class TextDataPipeline:
             all_tokens.extend([base_tokenizer.decode([t]) for t in tokens])
         
         # Count frequencies
-        token_freq = Counter(all_tokens)
+        token_freq = Counter(all_tokens) 
         sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
         
         # Create curriculum levels
         vocab_curriculum = VocabularyCurriculum()
         
-        # Core vocabulary (top 20% most frequent)
-        core_size = len(sorted_tokens) // 5
+        # Core vocabulary using config fraction
+        core_size = int(len(sorted_tokens) * self.config.vocab_core_fraction)
         vocab_curriculum.core_vocab = [token for token, _ in sorted_tokens[:core_size]]
         
         # Progressive levels
@@ -352,7 +372,7 @@ class TextDataPipeline:
             if len(selected_tokens) >= target_vocab_size:
                 break
             
-            # Skip if already added or if not in allowed vocab (for higher levels)
+            # Skip if already added
             if token_id in selected_tokens:
                 continue
                 
@@ -364,33 +384,70 @@ class TextDataPipeline:
             
             selected_tokens.add(token_id)
         
-        # Create filtered tokenizer by building new vocabulary
-        # This is a simplified approach - in production you'd want to retrain BPE
-        filtered_vocab = {}
-        id_mapping = {}
+        # Create mapping: special tokens get fixed positions, then frequent tokens
+        old_to_new_mapping = {}
+        new_to_old_mapping = {}
+        special_token_mapping = {}
         
-        # Map old token IDs to new token IDs
-        for new_id, old_id in enumerate(sorted(selected_tokens)):
+        # Map special tokens to positions 0, 1, 2, etc.
+        next_id = 0
+        for attr_name in ['pad_token_id', 'mask_token_id', 'bos_token_id', 'eos_token_id', 'unk_token_id']:
+            original_id = getattr(base_tokenizer, attr_name, None)
+            if original_id is not None and original_id in selected_tokens:
+                special_token_mapping[original_id] = next_id
+                old_to_new_mapping[original_id] = next_id
+                new_to_old_mapping[next_id] = original_id
+                next_id += 1
+        
+        # Then assign remaining tokens
+        current_new_id = len(special_token_mapping)
+        remaining_tokens = sorted([t for t in selected_tokens if t not in special_token_mapping])
+        
+        for old_id in remaining_tokens:
+            old_to_new_mapping[old_id] = current_new_id
+            new_to_old_mapping[current_new_id] = old_id
+            current_new_id += 1
+        
+        # Create new vocabulary
+        new_vocab = {}
+        for new_id, old_id in new_to_old_mapping.items():
             token_text = base_tokenizer.decode([old_id])
-            filtered_vocab[token_text] = new_id
-            id_mapping[old_id] = new_id
+            new_vocab[token_text] = new_id
         
-        # Create new tokenizer with filtered vocabulary
-        # Since we can't easily modify transformers tokenizer vocab, 
-        # we'll use a wrapper approach
+        # Create FilteredTokenizer class
         class FilteredTokenizer:
-            def __init__(self, base_tokenizer, id_mapping, filtered_vocab, special_tokens):
+            def __init__(self, base_tokenizer, old_to_new, new_to_old, new_vocab, special_mapping):
                 self.base_tokenizer = base_tokenizer
-                self.id_mapping = id_mapping
-                self.filtered_vocab = filtered_vocab
-                self.vocab_size = len(filtered_vocab)
+                self.old_to_new = old_to_new
+                self.new_to_old = new_to_old
+                self.new_vocab = new_vocab
+                self.vocab_size = len(new_vocab)
                 
-                # Set special token attributes
-                for attr, token in special_tokens.items():
-                    if hasattr(base_tokenizer, attr):
-                        setattr(self, attr, token)
-                        setattr(self, attr.replace('_token', '_token_id'), 
-                            filtered_vocab.get(token, 0))
+                # Set special token IDs using guaranteed mappings
+                original_pad_id = base_tokenizer.pad_token_id
+                original_mask_id = base_tokenizer.mask_token_id
+                original_bos_id = base_tokenizer.bos_token_id
+                original_eos_id = base_tokenizer.eos_token_id
+                original_unk_id = base_tokenizer.unk_token_id
+                
+                self.pad_token_id = special_mapping.get(original_pad_id, 0)
+                self.mask_token_id = special_mapping.get(original_mask_id, 1)
+                self.bos_token_id = special_mapping.get(original_bos_id) if original_bos_id else None
+                self.eos_token_id = special_mapping.get(original_eos_id) if original_eos_id else None
+                self.unk_token_id = special_mapping.get(original_unk_id, 0) if original_unk_id else 0
+                
+                # Validate all special token IDs are within vocabulary
+                for attr_name in ['pad_token_id', 'mask_token_id', 'bos_token_id', 'eos_token_id', 'unk_token_id']:
+                    token_id = getattr(self, attr_name)
+                    if token_id is not None and token_id >= self.vocab_size:
+                        raise ValueError(f"Special token {attr_name} is outside vocabulary range")
+                
+                # Set special token strings
+                self.pad_token = base_tokenizer.pad_token
+                self.mask_token = base_tokenizer.mask_token
+                self.bos_token = base_tokenizer.bos_token
+                self.eos_token = base_tokenizer.eos_token
+                self.unk_token = base_tokenizer.unk_token
             
             def encode(self, text, add_special_tokens=True, **kwargs):
                 # Encode with base tokenizer then map to filtered vocab
@@ -398,29 +455,29 @@ class TextDataPipeline:
                 filtered_ids = []
                 
                 for token_id in base_ids:
-                    if token_id in self.id_mapping:
-                        filtered_ids.append(self.id_mapping[token_id])
+                    if token_id in self.old_to_new:
+                        filtered_ids.append(self.old_to_new[token_id])
                     else:
-                        # Map unknown tokens to a default (first non-special token)
-                        filtered_ids.append(1)  # Assuming 1 is first regular token
+                        # Map unknown tokens to UNK
+                        filtered_ids.append(self.unk_token_id)
                 
                 return filtered_ids
             
             def decode(self, token_ids, skip_special_tokens=True, **kwargs):
                 # Map back to base vocabulary for decoding
-                reverse_mapping = {v: k for k, v in self.id_mapping.items()}
                 base_ids = []
-                
                 for token_id in token_ids:
-                    if token_id in reverse_mapping:
-                        base_ids.append(reverse_mapping[token_id])
+                    if token_id in self.new_to_old:
+                        base_ids.append(self.new_to_old[token_id])
                     else:
+                        # Handle out-of-vocab tokens
                         base_ids.append(self.base_tokenizer.unk_token_id or 0)
                 
                 return self.base_tokenizer.decode(base_ids, skip_special_tokens=skip_special_tokens, **kwargs)
             
             def save_pretrained(self, save_directory):
-                """Save the filtered tokenizer"""
+                """Save filtered tokenizer"""
+                from pathlib import Path
                 save_path = Path(save_directory)
                 save_path.mkdir(parents=True, exist_ok=True)
                 
@@ -432,34 +489,31 @@ class TextDataPipeline:
                 filter_info = {
                     'vocab_level': vocab_level,
                     'vocab_size': self.vocab_size,
-                    'id_mapping': {str(k): v for k, v in self.id_mapping.items()},
-                    'filtered_vocab': self.filtered_vocab,
-                    'target_vocab_size': target_vocab_size
+                    'old_to_new_mapping': {str(k): v for k, v in self.old_to_new.items()},
+                    'new_to_old_mapping': {str(k): v for k, v in self.new_to_old.items()},
+                    'filtered_vocab': self.new_vocab,
+                    'target_vocab_size': target_vocab_size,
+                    'special_token_mapping': {str(k): v for k, v in special_mapping.items()}
                 }
                 
                 with open(save_path / 'vocab_filter.json', 'w') as f:
                     json.dump(filter_info, f, indent=2)
+                
+                print(f"Filtered tokenizer saved to: {save_path}")
             
             def __len__(self):
                 return self.vocab_size
         
         # Create and return filtered tokenizer
-        special_tokens = {
-            'pad_token': base_tokenizer.pad_token,
-            'mask_token': base_tokenizer.mask_token,
-            'bos_token': base_tokenizer.bos_token,
-            'eos_token': base_tokenizer.eos_token
-        }
-        
         filtered_tokenizer = FilteredTokenizer(
-            base_tokenizer, id_mapping, filtered_vocab, special_tokens
+            base_tokenizer, old_to_new_mapping, new_to_old_mapping, new_vocab, special_token_mapping
         )
         
         print(f"Created tokenizer for vocab level {vocab_level}: {len(filtered_tokenizer):,} tokens")
         return filtered_tokenizer
-
+    
     def _add_special_tokens(self, tokenizer: AutoTokenizer) -> AutoTokenizer:
-        """Add special tokens to tokenizer (compression happens later during save)"""
+        """Add special tokens to tokenizer"""
         special_tokens = {
             "pad_token": "<pad>",
             "mask_token": "<mask>", 
@@ -498,7 +552,7 @@ class TextDataPipeline:
         token_freq = Counter(all_tokens)
         total_tokens = len(all_tokens)
         
-        # CRITICAL: Always include special tokens first
+        # Always include special tokens first
         special_token_ids = []
         special_token_mapping = {}
         
@@ -513,17 +567,17 @@ class TextDataPipeline:
         
         print(f"🔧 Special tokens mapped: {len(special_token_mapping)} tokens")
         
-        # Sort remaining tokens by frequency (most frequent first)
+        # Sort remaining tokens by frequency
         sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
         
-        # Select tokens to keep (excluding special tokens already selected)
-        selected_tokens = set(special_token_ids)  # Start with special tokens
+        # Select tokens to keep
+        selected_tokens = set(special_token_ids)
         cumulative_freq = 0
         
-        # Add most frequent tokens until we hit target size
+        # Add most frequent tokens until we hit target size or coverage threshold
         for token_id, freq in sorted_tokens:
             if token_id in selected_tokens:
-                continue  # Skip if already included as special token
+                continue
                 
             if len(selected_tokens) >= self.target_vocab_size:
                 break
@@ -531,11 +585,12 @@ class TextDataPipeline:
             selected_tokens.add(token_id)
             cumulative_freq += freq
             
-            # Stop if we've covered 95% of the corpus and have reasonable size
-            if cumulative_freq >= 0.95 * total_tokens and len(selected_tokens) >= 1000:
+            # Stop if we've covered enough of the corpus and have viable size
+            if (cumulative_freq >= self.config.corpus_coverage_threshold * total_tokens and 
+                len(selected_tokens) >= self.config.min_compressed_vocab_size):
                 break
         
-        # Create mapping: special tokens get fixed positions 0,1,2... then frequent tokens
+        # Create mapping: special tokens get fixed positions, then frequent tokens
         old_to_new_mapping = {}
         new_to_old_mapping = {}
         
@@ -559,7 +614,7 @@ class TextDataPipeline:
             token_text = tokenizer.decode([old_id])
             new_vocab[token_text] = new_id
         
-        # Create compressed tokenizer class
+        # Create compressed tokenizer class (same implementation as before)
         class CompressedTokenizer:
             def __init__(self, base_tokenizer, old_to_new, new_to_old, new_vocab, special_mapping):
                 self.base_tokenizer = base_tokenizer
@@ -568,7 +623,7 @@ class TextDataPipeline:
                 self.new_vocab = new_vocab
                 self.vocab_size = len(new_vocab)
                 
-                # FIXED: Set special token IDs using guaranteed mappings
+                # Set special token IDs using guaranteed mappings
                 original_pad_id = base_tokenizer.pad_token_id
                 original_mask_id = base_tokenizer.mask_token_id
                 original_bos_id = base_tokenizer.bos_token_id
@@ -585,7 +640,6 @@ class TextDataPipeline:
                 for attr_name in ['pad_token_id', 'mask_token_id', 'bos_token_id', 'eos_token_id', 'unk_token_id']:
                     token_id = getattr(self, attr_name)
                     if token_id is not None and token_id >= self.vocab_size:
-                        print(f"❌ ERROR: {attr_name}={token_id} >= vocab_size={self.vocab_size}")
                         raise ValueError(f"Special token {attr_name} is outside vocabulary range")
                 
                 # Set special token strings
@@ -594,13 +648,8 @@ class TextDataPipeline:
                 self.bos_token = base_tokenizer.bos_token
                 self.eos_token = base_tokenizer.eos_token
                 self.unk_token = base_tokenizer.unk_token
-                
-                print(f"✅ Special token mapping:")
-                print(f"   pad_token_id: {original_pad_id} → {self.pad_token_id}")
-                print(f"   mask_token_id: {original_mask_id} → {self.mask_token_id}")
             
             def encode(self, text, add_special_tokens=True, **kwargs):
-                # Encode with base tokenizer then map to compressed vocab
                 base_ids = self.base_tokenizer.encode(text, add_special_tokens=add_special_tokens, **kwargs)
                 compressed_ids = []
                 
@@ -608,25 +657,21 @@ class TextDataPipeline:
                     if token_id in self.old_to_new:
                         compressed_ids.append(self.old_to_new[token_id])
                     else:
-                        # Map unknown tokens to UNK
                         compressed_ids.append(self.unk_token_id)
                 
                 return compressed_ids
             
             def decode(self, token_ids, skip_special_tokens=True, **kwargs):
-                # Map back to base vocabulary for decoding
                 base_ids = []
                 for token_id in token_ids:
                     if token_id in self.new_to_old:
                         base_ids.append(self.new_to_old[token_id])
                     else:
-                        # Handle out-of-vocab tokens
                         base_ids.append(self.base_tokenizer.unk_token_id or 0)
                 
                 return self.base_tokenizer.decode(base_ids, skip_special_tokens=skip_special_tokens, **kwargs)
             
             def save_pretrained(self, save_directory):
-                """Save compressed tokenizer"""
                 from pathlib import Path
                 save_path = Path(save_directory)
                 save_path.mkdir(parents=True, exist_ok=True)
@@ -652,8 +697,6 @@ class TextDataPipeline:
                 
                 with open(save_path / 'compression_info.json', 'w') as f:
                     json.dump(compression_info, f, indent=2)
-                
-                print(f"💾 Compressed tokenizer saved to {save_path}")
             
             def __len__(self):
                 return self.vocab_size
@@ -673,16 +716,15 @@ class TextDataPipeline:
         print(f"   Corpus coverage: {coverage:.1%}")
         
         return compressed_tokenizer
-
     
     def calculate_lexical_difficulty(self, segments: List[str]) -> List[float]:
-        """Calculate lexical rarity scores"""
+        """Calculate lexical rarity scores using config parameters"""
         if self.tokenizer is None:
             self.tokenizer = self.create_adaptive_tokenizer(segments)
         
         scores = []
         for text in segments:
-            # Calculate average word rarity using IDF-like scoring
+            # Calculate average word rarity using config normalization
             words = re.findall(r'\b\w+\b', text.lower())
             if not words:
                 scores.append(0.0)
@@ -691,29 +733,29 @@ class TextDataPipeline:
             # Simple heuristic: longer words = rarer/harder
             avg_word_length = sum(len(word) for word in words) / len(words)
             
-            # Normalize to [0, 1]
-            lexical_score = min(1.0, avg_word_length / 15.0)
+            # Normalize using config value
+            lexical_score = min(1.0, avg_word_length / self.config.lexical_max_word_length)
             scores.append(lexical_score)
         
         return scores
     
     def calculate_syntactic_complexity(self, segments: List[str]) -> List[float]:
-        """Calculate syntactic complexity using multiple metrics"""
+        """Calculate syntactic complexity using config parameters"""
         scores = []
         for text in segments:
             try:
-                # Multiple complexity measures
+                # Multiple complexity measures using config values
                 flesch = textstat.flesch_reading_ease(text)
-                flesch_score = max(0, (100 - flesch) / 100)
+                flesch_score = max(0, (self.config.flesch_score_base - flesch) / self.config.flesch_score_base)
                 
-                # Sentence length penalty
+                # Sentence length penalty using config
                 words = text.split()
-                length_score = min(1.0, len(words) / 50.0)
+                length_score = min(1.0, len(words) / self.config.sentence_length_max_words)
                 
-                # Subordinate clause detection (simple heuristic)
-                subordinate_markers = ['because', 'since', 'although', 'while', 'if', 'when', 'that', 'which']
-                subordinate_count = sum(1 for marker in subordinate_markers if marker in text.lower())
-                subordinate_score = min(1.0, subordinate_count / 3.0)
+                # Subordinate clause detection using config
+                subordinate_count = sum(1 for marker in self.config.subordinate_markers 
+                                      if marker in text.lower())
+                subordinate_score = min(1.0, subordinate_count / self.config.subordinate_clause_max_count)
                 
                 # Combine scores
                 complexity = (flesch_score + length_score + subordinate_score) / 3.0
@@ -726,7 +768,7 @@ class TextDataPipeline:
         return scores
     
     def calculate_thematic_centrality(self, segments: List[str]) -> Tuple[List[float], List[int]]:
-        """Calculate thematic centrality using sentence embeddings"""
+        """Calculate thematic centrality using config parameters"""
         print("Calculating sentence embeddings...")
         embeddings = self.embedding_model.encode(segments, show_progress_bar=True)
         self.embeddings = embeddings
@@ -738,15 +780,15 @@ class TextDataPipeline:
         self.cluster_model = KMeans(n_clusters=self.n_clusters, random_state=42)
         cluster_labels = self.cluster_model.fit_predict(embeddings_scaled)
         
-        # Calculate centrality scores
+        # Calculate centrality scores using config
         centrality_scores = []
         for i, embedding in enumerate(embeddings):
             cluster_id = cluster_labels[i]
             cluster_center = self.cluster_model.cluster_centers_[cluster_id]
             
-            # Distance to cluster center (inverted for centrality)
+            # Distance to cluster center (inverted for centrality) using config
             distance = np.linalg.norm(embeddings_scaled[i] - cluster_center)
-            centrality = max(0, 1 - distance / 3)  # Normalize
+            centrality = max(0, 1 - distance / self.config.centrality_distance_normalizer)
             centrality_scores.append(centrality)
         
         return centrality_scores, cluster_labels
@@ -767,7 +809,7 @@ class TextDataPipeline:
         return roles, confidences
     
     def assign_vocabulary_levels(self, segments: List[str]) -> List[int]:
-        """Assign vocabulary curriculum levels to segments"""
+        """Assign vocabulary curriculum levels using config thresholds"""
         if not self.vocab_curriculum:
             return [1] * len(segments)
         
@@ -781,18 +823,21 @@ class TextDataPipeline:
                 if word not in self.vocab_curriculum.core_vocab:
                     rare_word_count += 1
             
-            # Assign level based on rare word density
+            # Assign level based on rare word density using config thresholds
             rare_ratio = rare_word_count / max(len(words), 1)
-            if rare_ratio < 0.1:
-                level = 1
-            elif rare_ratio < 0.3:
-                level = 2
-            elif rare_ratio < 0.5:
-                level = 3
-            else:
-                level = min(4, int(rare_ratio * 8))
+            level = 1
             
-            levels.append(level)
+            for i, threshold in enumerate(self.config.vocab_rare_ratio_thresholds):
+                if rare_ratio >= threshold:
+                    level = i + 2  # Start from level 2
+                else:
+                    break
+            
+            # Cap at max level using config
+            if rare_ratio >= self.config.vocab_rare_ratio_thresholds[-1]:
+                level = min(self.config.vocab_level_multiplier, int(rare_ratio * self.config.vocab_level_multiplier))
+            
+            levels.append(min(level, 5))  # Max level 5
         
         return levels
     
@@ -814,13 +859,13 @@ class TextDataPipeline:
         return final_score
     
     def assign_curriculum_stages(self, segments: List[TextSegment]) -> None:
-        """Assign segments to curriculum stages based on difficulty"""
+        """Assign segments to curriculum stages using config percentiles"""
         # Sort by combined difficulty
         difficulties = [s.combined_difficulty for s in segments]
         
-        # Calculate percentile thresholds
-        easy_threshold = np.percentile(difficulties, 33)
-        hard_threshold = np.percentile(difficulties, 67)
+        # Calculate percentile thresholds using config
+        easy_threshold = np.percentile(difficulties, self.config.easy_difficulty_percentile)
+        hard_threshold = np.percentile(difficulties, self.config.hard_difficulty_percentile)
         
         for segment in segments:
             if segment.combined_difficulty <= easy_threshold:
@@ -875,29 +920,233 @@ class TextDataPipeline:
         return pairs
     
     def generate_pseudo_data(self, model, stage_2_segments: List[TextSegment], 
-                           num_samples: int = 100) -> List[str]:
-        """Generate pseudo-data for Stage III self-training"""
-        # This would use the trained Stage II model to generate variations
-        # For now, return simple paraphrases as placeholder
+                           num_samples: int = None) -> List[str]:
+        """Generate pseudo-data for Stage III self-training using actual model"""
+        if num_samples is None:
+            num_samples = self.config.max_pseudo_samples_default
+        
+        if model is None:
+            print("Warning: No model provided for pseudo-data generation, using simple paraphrases")
+            return self._generate_simple_paraphrases(stage_2_segments, num_samples)
+        
+        pseudo_texts = []
+        model.eval()
+        
+        with torch.no_grad():
+            for segment in stage_2_segments[:num_samples]:
+                original_text = segment.text
+                
+                # Generate multiple variations using the model
+                variations = self._generate_model_variations(model, original_text)
+                
+                # Filter variations for quality
+                high_quality_variations = self._filter_pseudo_data_quality(
+                    original_text, variations
+                )
+                
+                pseudo_texts.extend(high_quality_variations)
+                
+                # Limit total pseudo samples
+                if len(pseudo_texts) >= num_samples:
+                    break
+        
+        model.train()  # Reset to training mode
+        return pseudo_texts[:num_samples]
+    
+    def _generate_model_variations(self, model, original_text: str, 
+                                 num_variations: int = 3) -> List[str]:
+        """Generate variations using the trained model"""
+        variations = []
+        
+        try:
+            # Tokenize the original text
+            tokens = self.tokenizer.encode(original_text, add_special_tokens=True)
+            
+            for _ in range(num_variations):
+                # Create masked versions with different masking patterns
+                masked_tokens = self._create_pseudo_data_masks(tokens)
+                
+                # Convert to tensor
+                input_ids = torch.tensor([masked_tokens])
+                attention_mask = torch.ones_like(input_ids)
+                
+                # Generate using the model
+                outputs = model(input_ids, attention_mask, masking_rate=0.0)  # No additional masking
+                logits = outputs['logits']
+                
+                # Sample from the distribution
+                probs = torch.softmax(logits, dim=-1)
+                sampled_tokens = torch.multinomial(probs.view(-1, probs.size(-1)), 1).view(input_ids.shape)
+                
+                # Only update masked positions
+                mask_positions = (input_ids == model.mask_token_id)
+                generated_ids = input_ids.clone()
+                generated_ids[mask_positions] = sampled_tokens[mask_positions]
+                
+                # Decode the result
+                generated_text = self.tokenizer.decode(
+                    generated_ids[0].tolist(), 
+                    skip_special_tokens=True
+                )
+                
+                if generated_text.strip() and generated_text != original_text:
+                    variations.append(generated_text.strip())
+        
+        except Exception as e:
+            print(f"Warning: Model generation failed: {e}, falling back to paraphrases")
+            variations = self._generate_simple_paraphrases([type('', (), {'text': original_text})()], 3)
+        
+        return variations
+    
+    def _create_pseudo_data_masks(self, tokens: List[int]) -> List[int]:
+        """Create strategic masks for pseudo-data generation"""
+        if not hasattr(self, 'tokenizer') or self.tokenizer is None:
+            return tokens
+        
+        masked_tokens = tokens.copy()
+        
+        # Mask 20-40% of tokens strategically
+        mask_rate = np.random.uniform(0.2, 0.4)
+        n_mask = int(len(tokens) * mask_rate)
+        
+        # Don't mask special tokens
+        maskable_positions = []
+        for i, token_id in enumerate(tokens):
+            if (token_id not in [self.tokenizer.pad_token_id, self.tokenizer.bos_token_id, 
+                               self.tokenizer.eos_token_id] and i > 0 and i < len(tokens) - 1):
+                maskable_positions.append(i)
+        
+        if maskable_positions and n_mask > 0:
+            # Randomly select positions to mask
+            mask_positions = np.random.choice(
+                maskable_positions, 
+                size=min(n_mask, len(maskable_positions)), 
+                replace=False
+            )
+            
+            for pos in mask_positions:
+                masked_tokens[pos] = self.tokenizer.mask_token_id
+        
+        return masked_tokens
+    
+    def _filter_pseudo_data_quality(self, original_text: str, 
+                                   variations: List[str]) -> List[str]:
+        """Filter pseudo-data for quality using multiple criteria"""
+        if not variations:
+            return []
+        
+        high_quality = []
+        
+        for variation in variations:
+            if self._is_high_quality_pseudo_data(original_text, variation):
+                high_quality.append(variation)
+        
+        return high_quality
+    
+    def _is_high_quality_pseudo_data(self, original: str, variation: str) -> bool:
+        """Check if generated variation meets quality criteria"""
+        # Basic sanity checks
+        if not variation or variation == original:
+            return False
+        
+        # Length similarity check
+        orig_len = len(original.split())
+        var_len = len(variation.split())
+        length_ratio = min(orig_len, var_len) / max(orig_len, var_len)
+        
+        if length_ratio < 0.7:  # Too different in length
+            return False
+        
+        # Semantic similarity check using embeddings
+        if hasattr(self, 'embedding_model') and self.embedding_model:
+            try:
+                orig_embedding = self.embedding_model.encode([original])
+                var_embedding = self.embedding_model.encode([variation])
+                
+                # Calculate cosine similarity
+                similarity = np.dot(orig_embedding[0], var_embedding[0]) / (
+                    np.linalg.norm(orig_embedding[0]) * np.linalg.norm(var_embedding[0])
+                )
+                
+                # Require reasonable semantic similarity (configurable threshold)
+                min_similarity = getattr(self.config, 'pseudo_data_min_similarity', 0.7)
+                if similarity < min_similarity:
+                    return False
+                    
+            except Exception as e:
+                print(f"Warning: Semantic similarity check failed: {e}")
+                # Fall back to lexical overlap check
+                orig_words = set(original.lower().split())
+                var_words = set(variation.lower().split())
+                overlap = len(orig_words & var_words) / len(orig_words | var_words)
+                
+                if overlap < 0.5:  # Require 50% word overlap
+                    return False
+        
+        # Check for reasonable vocabulary (no excessive repetition)
+        words = variation.split()
+        unique_words = len(set(words))
+        if len(words) > 5 and unique_words / len(words) < 0.6:  # Too repetitive
+            return False
+        
+        # Check for basic grammatical structure (has both subjects and predicates)
+        if len(words) > 3:
+            # Simple heuristic: should have some common function words
+            function_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'have', 'has', 'had'}
+            if not any(word.lower() in function_words for word in words):
+                return False
+        
+        return True
+    
+    def _generate_simple_paraphrases(self, segments: List[TextSegment], 
+                                   num_samples: int) -> List[str]:
+        """Fallback: Generate simple paraphrases when model is unavailable"""
         pseudo_texts = []
         
-        for segment in stage_2_segments[:num_samples]:
-            # Simple pseudo-generation (in practice, use the actual model)
+        # More sophisticated paraphrasing patterns
+        paraphrase_patterns = [
+            # Verb replacements
+            (' is ', ' appears to be '), (' is ', ' seems to be '), (' is ', ' represents '),
+            (' shows ', ' demonstrates '), (' shows ', ' indicates '), (' shows ', ' reveals '),
+            (' proves ', ' establishes '), (' proves ', ' confirms '), (' proves ', ' validates '),
+            (' because ', ' since '), (' because ', ' due to the fact that '), (' because ', ' as '),
+            (' however ', ' nevertheless '), (' however ', ' nonetheless '), (' however ', ' yet '),
+            (' therefore ', ' thus '), (' therefore ', ' consequently '), (' therefore ', ' hence '),
+            
+            # Adjective replacements  
+            (' important ', ' significant '), (' important ', ' crucial '), (' important ', ' vital '),
+            (' large ', ' substantial '), (' large ', ' considerable '), (' large ', ' extensive '),
+            (' small ', ' minor '), (' small ', ' limited '), (' small ', ' modest '),
+            
+            # Noun replacements
+            (' evidence ', ' data '), (' evidence ', ' findings '), (' evidence ', ' observations '),
+            (' result ', ' outcome '), (' result ', ' consequence '), (' result ', ' effect '),
+            (' method ', ' approach '), (' method ', ' technique '), (' method ', ' procedure '),
+        ]
+        
+        for segment in segments[:num_samples]:
             original = segment.text
             
-            # Create simple variations
-            variations = [
-                original.replace(' is ', ' appears to be '),
-                original.replace(' shows ', ' demonstrates '),
-                original.replace(' because ', ' since '),
-            ]
+            # Apply multiple paraphrase patterns
+            for pattern_set in [paraphrase_patterns[i:i+3] for i in range(0, len(paraphrase_patterns), 3)]:
+                for old_phrase, new_phrase in pattern_set:
+                    if old_phrase in original:
+                        variation = original.replace(old_phrase, new_phrase)
+                        
+                        # Quality check for simple paraphrases
+                        if (variation != original and 
+                            len(variation) > len(original) * 0.8 and
+                            len(variation) < len(original) * 1.3):
+                            pseudo_texts.append(variation)
+                            break
+                
+                if len(pseudo_texts) >= num_samples:
+                    break
             
-            # Filter for quality (semantic similarity check would go here)
-            for variation in variations:
-                if len(variation) > len(original) * 0.8:  # Simple length filter
-                    pseudo_texts.append(variation)
+            if len(pseudo_texts) >= num_samples:
+                break
         
-        return pseudo_texts
+        return pseudo_texts[:num_samples]
     
     def update_dynamic_scores(self, segment_ids: List[int], losses: List[float], 
                             gradient_norms: List[float] = None):
@@ -920,7 +1169,7 @@ class TextDataPipeline:
                 segment.combined_difficulty = self.combine_difficulty_scores(segment)
     
     def process_text_file(self, file_path: str) -> List[TextSegment]:
-        """Main processing pipeline with all curriculum features"""
+        """Main processing pipeline with configuration-driven processing"""
         print(f"Processing: {file_path}")
         
         # Load and segment text
@@ -997,13 +1246,10 @@ class TextDataPipeline:
         """Save processed data with all curriculum components"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-
-        # ADD THESE DEBUG LINES:
-        print(f"🔍 DEBUG: enable_vocab_curriculum = {self.enable_vocab_curriculum}")
-        print(f"🔍 DEBUG: vocab_curriculum exists = {self.vocab_curriculum is not None}")
-        print(f"🔍 DEBUG: tokenizer exists = {self.tokenizer is not None}")
-        if self.tokenizer:
-            print(f"🔍 DEBUG: tokenizer size = {len(self.tokenizer):,}")
+        
+        # Save pipeline config
+        with open(output_path / "pipeline_config.pkl", "wb") as f:
+            pickle.dump(self.config, f)
         
         # Save segments
         with open(output_path / "segments.pkl", "wb") as f:
@@ -1068,6 +1314,12 @@ class TextDataPipeline:
         """Load previously processed curriculum data"""
         data_path = Path(data_dir)
         
+        # Load pipeline config
+        config_path = data_path / "pipeline_config.pkl"
+        if config_path.exists():
+            with open(config_path, "rb") as f:
+                self.config = pickle.load(f)
+        
         # Load segments
         with open(data_path / "segments.pkl", "rb") as f:
             self.segments = pickle.load(f)
@@ -1096,24 +1348,27 @@ class TextDataPipeline:
 
 
 def main():
-    """Example usage of enhanced pipeline"""
-    # Initialize enhanced pipeline
+    """Example usage of configuration-driven pipeline"""
+    # Initialize with custom config
+    pipeline_config = PipelineConfig.high_quality()
+    
     pipeline = TextDataPipeline(
-        n_clusters=8, 
+        pipeline_config=pipeline_config,
         target_vocab_size=25000,
         enable_argument_mining=True,
         enable_vocab_curriculum=True
     )
     
     # Process text file
-    segments = pipeline.process_text_file("data/raw/complete_works_shakespeare.txt")
+    segments = pipeline.process_text_file("data/raw/sample_text.txt")
     
     # Save results
     pipeline.save_data("data/processed")
     
-    # Print enhanced statistics
+    # Print statistics
     difficulties = [s.combined_difficulty for s in segments]
-    print(f"\nEnhanced Curriculum Statistics:")
+    print(f"\nConfiguration-Driven Pipeline Statistics:")
+    print(f"Config: {type(pipeline.config).__name__}")
     print(f"Total segments: {len(segments)}")
     print(f"Difficulty range: {min(difficulties):.3f} - {max(difficulties):.3f}")
     print(f"Argumentative roles: {Counter(s.argumentative_role for s in segments)}")

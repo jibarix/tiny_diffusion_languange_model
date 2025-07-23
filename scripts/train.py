@@ -407,15 +407,13 @@ def main():
     
     # Load configuration
     if args.debug:
-        config = ProjectConfig(
-            model=ModelConfig.tiny_125m(),
-            training=TrainingConfig.fast_debug(),
-            curriculum=CurriculumConfig.fast_debug(),
-            generation=GenerationConfig.default()
-        )
+        config = ProjectConfig.debug()
         print("🐛 Fast debug mode: 1 epoch per stage")
     else:
-        config = ProjectConfig.from_yaml(args.config)
+        config = load_config_with_overrides(
+            config_file=args.config if args.config else None,
+            args=args
+        )
 
     # Validate configuration
     config.validate()

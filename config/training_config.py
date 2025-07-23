@@ -61,6 +61,21 @@ class TrainingConfig:
     memory_safety_margin: float = 0.1     # Safety margin for memory estimation
     bytes_per_param: int = 4              # Bytes per parameter (was hardcoded as 4)
     memory_multiplier: float = 3.0        # Memory multiplier for model+optimizer+gradients (was hardcoded as 3)
+
+    # NEW: Dynamic difficulty parameters (from trainer.py)
+    loss_normalization_factor: float = 10.0  # "max reasonable loss ~10"
+    gradient_normalization_factor: float = 1.0  # "max grad ~1.0"
+    
+    # NEW: Validation parameters (from trainer.py)
+    validation_masking_rate: float = 0.15    # Fixed rate for validation
+    validation_frequency: int = 5            # Validate every N epochs
+    
+    # NEW: Curriculum scheduler parameters (from trainer.py)
+    adaptation_window: int = 10
+    min_epochs_per_stage: int = 5
+    max_epochs_per_stage: int = 200
+    performance_plateau_epochs: int = 10
+    improvement_threshold: float = 0.01
     
     @property
     def effective_batch_size(self) -> int:

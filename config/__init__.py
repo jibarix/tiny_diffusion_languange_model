@@ -1,25 +1,29 @@
 """
-Unified Configuration Manager for Tiny Text Diffusion Model
-Provides single entry point for all configurations
+Simplified Configuration Manager for Tiny Text Diffusion Model
+Single source of truth with simple override system - NO YAML COMPLEXITY
 """
 
 import os
-from dataclasses import dataclass, asdict
-from typing import Dict, Any
-import yaml
+import argparse
+from dataclasses import dataclass, replace, fields
+from typing import Dict, Any, Optional, Union
+from pathlib import Path
 
 from .model_config import ModelConfig
 from .training_config import TrainingConfig  
-from .curriculum_config import CurriculumConfig, StageConfig
+from .curriculum_config import CurriculumConfig
 from .generation_config import GenerationConfig
+from .pipeline_config import PipelineConfig
+
 
 @dataclass
 class ProjectConfig:
-    """Unified configuration manager"""
+    """Simplified configuration manager - Python is the source of truth"""
     model: ModelConfig
     training: TrainingConfig
     curriculum: CurriculumConfig
     generation: GenerationConfig
+    pipeline: PipelineConfig
     
     # Project paths
     data_dir: str = "data"
@@ -32,126 +36,293 @@ class ProjectConfig:
     gradient_checkpointing: bool = True
     
     # Experiment settings
-    experiment_name: str = "micro-diffusion"
+    experiment_name: str = "tiny-diffusion"
     seed: int = 42
     
     @classmethod
-    def from_yaml(cls, config_path: str) -> 'ProjectConfig':
-        """Load configuration from YAML file"""
-        with open(config_path, 'r') as f:
-            config_dict = yaml.safe_load(f)
-        
-        # Convert curriculum stages from dicts to StageConfig objects
-        curriculum_dict = config_dict.get('curriculum', {})
-        if 'stages' in curriculum_dict:
-            stage_configs = []
-            for stage_dict in curriculum_dict['stages']:
-                # Convert masking_rate_range list to tuple
-                if 'masking_rate_range' in stage_dict:
-                    stage_dict['masking_rate_range'] = tuple(stage_dict['masking_rate_range'])
-                
-                # Create StageConfig object
-                stage_config = StageConfig(**stage_dict)
-                stage_configs.append(stage_config)
-            
-            # Replace stages list with StageConfig objects
-            curriculum_dict['stages'] = stage_configs
-        
-        return cls(
-            model=ModelConfig(**config_dict.get('model', {})),
-            training=TrainingConfig(**config_dict.get('training', {})),
-            curriculum=CurriculumConfig(**curriculum_dict),
-            generation=GenerationConfig(**config_dict.get('generation', {})),
-            **{k: v for k, v in config_dict.items() 
-               if k not in ['model', 'training', 'curriculum', 'generation']}
-        )
-    
-    @classmethod
     def default(cls) -> 'ProjectConfig':
-        """Create default configuration for the Micro Diffusion project"""
+        """Create default configuration - SINGLE SOURCE OF TRUTH"""
         return cls(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.default(),
             curriculum=CurriculumConfig.three_stage(),
-            generation=GenerationConfig.default()
+            generation=GenerationConfig.default(),
+            pipeline=PipelineConfig.default()
         )
     
-    def save_yaml(self, config_path: str):
-        """Save configuration to YAML file"""
-        config_dict = {
-            'model': asdict(self.model),
-            'training': asdict(self.training), 
-            'curriculum': self._curriculum_to_dict(),
-            'generation': asdict(self.generation),
-            'data_dir': self.data_dir,
-            'output_dir': self.output_dir,
-            'cache_dir': self.cache_dir,
-            'device': self.device,
-            'mixed_precision': self.mixed_precision,
-            'gradient_checkpointing': self.gradient_checkpointing,
-            'experiment_name': self.experiment_name,
-            'seed': self.seed
+    @classmethod
+    def debug(cls) -> 'ProjectConfig':
+        """Fast debug configuration"""
+        return cls(
+            model=ModelConfig.tiny_125m(),
+            training=TrainingConfig.fast_debug(),
+            curriculum=CurriculumConfig.fast_debug(),
+            generation=GenerationConfig.fast(),
+            experiment_name="debug-run"
+        )
+    
+    def override(self, **kwargs) -> 'ProjectConfig':
+        """Simple override with dot notation support
+        
+        Examples:
+            config.override(seed=123, experiment_name="new-exp")
+            config.override(**{"model.d_model": 512, "training.batch_size": 16})
+        """
+        # Handle direct field overrides
+        direct_overrides = {}
+        nested_overrides = {}
+        
+        for key, value in kwargs.items():
+            if '.' in key:
+                # Nested override like "model.d_model"
+                section, field = key.split('.', 1)
+                if section not in nested_overrides:
+                    nested_overrides[section] = {}
+                nested_overrides[section][field] = value
+            else:
+                # Direct field override
+                direct_overrides[key] = value
+        
+        # Start with current config
+        new_config = self
+        
+        # Apply nested overrides
+        for section_name, section_overrides in nested_overrides.items():
+            if hasattr(new_config, section_name):
+                current_section = getattr(new_config, section_name)
+                new_section = replace(current_section, **section_overrides)
+                direct_overrides[section_name] = new_section
+        
+        # Apply all overrides
+        return replace(new_config, **direct_overrides)
+    
+    def override_from_dict(self, override_dict: Dict[str, Any]) -> 'ProjectConfig':
+        """Override from dictionary with dot notation support"""
+        return self.override(**override_dict)
+    
+    def override_from_args(self, args: argparse.Namespace) -> 'ProjectConfig':
+        """Override from command line arguments"""
+        overrides = {}
+        
+        # Map common argument names to config paths
+        arg_mapping = {
+            'batch_size': 'training.batch_size',
+            'learning_rate': 'training.learning_rate',
+            'max_epochs': 'training.max_epochs',
+            'vocab_size': 'model.vocab_size',
+            'max_seq_len': 'model.max_seq_len',
+            'n_layers': 'model.n_layers',
+            'd_model': 'model.d_model',
+            'experiment_name': 'experiment_name',
+            'data_dir': 'data_dir',
+            'output_dir': 'output_dir',
+            'device': 'device',
+            'seed': 'seed'
         }
         
-        with open(config_path, 'w') as f:
-            yaml.dump(config_dict, f, indent=2)
-    
-    def _curriculum_to_dict(self):
-        """Convert curriculum config to YAML-safe dict"""
-        curriculum_dict = asdict(self.curriculum)
+        # Apply mapped arguments
+        for arg_name, config_path in arg_mapping.items():
+            if hasattr(args, arg_name):
+                value = getattr(args, arg_name)
+                if value is not None:
+                    overrides[config_path] = value
         
-        # Convert StageConfig objects to dicts and tuples to lists
-        if 'stages' in curriculum_dict:
-            for stage in curriculum_dict['stages']:
-                if 'masking_rate_range' in stage and isinstance(stage['masking_rate_range'], tuple):
-                    stage['masking_rate_range'] = list(stage['masking_rate_range'])
+        # Apply any additional arguments that match config structure
+        for key, value in vars(args).items():
+            if value is not None and key not in arg_mapping:
+                # Try direct mapping for unmapped arguments
+                if hasattr(self, key):
+                    overrides[key] = value
         
-        return curriculum_dict
+        return self.override_from_dict(overrides)
     
-    def validate(self):
+    def override_from_file(self, config_file: Union[str, Path]) -> 'ProjectConfig':
+        """Override from simple Python config file (NOT YAML!)
+        
+        Config file should be Python with overrides dict:
+        # experiment.py
+        overrides = {
+            "experiment_name": "frankenstein-experiment",
+            "model.vocab_size": 4196,
+            "training.batch_size": 16,
+            "training.learning_rate": 1e-4
+        }
+        """
+        config_path = Path(config_file)
+        
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        
+        # Execute Python config file
+        config_globals = {}
+        with open(config_path, 'r') as f:
+            exec(f.read(), config_globals)
+        
+        if 'overrides' not in config_globals:
+            raise ValueError(f"Config file {config_path} must define an 'overrides' dictionary")
+        
+        return self.override_from_dict(config_globals['overrides'])
+    
+    def get_nested_value(self, path: str) -> Any:
+        """Get nested config value using dot notation"""
+        parts = path.split('.')
+        value = self
+        
+        for part in parts:
+            if hasattr(value, part):
+                value = getattr(value, part)
+            else:
+                raise AttributeError(f"Config path '{path}' not found")
+        
+        return value
+    
+    def validate(self) -> bool:
         """Validate all configuration components"""
-        # Validate model configuration
-        assert self.model.d_model > 0, "Model dimension must be positive"
-        assert self.model.n_layers > 0, "Number of layers must be positive"
-        assert self.model.n_heads > 0, "Number of heads must be positive"
-        assert self.model.d_model % self.model.n_heads == 0, "Model dimension must be divisible by number of heads"
-        assert self.model.vocab_size > 0, "Vocabulary size must be positive"
-        assert self.model.max_seq_len > 0, "Maximum sequence length must be positive"
-        assert 0 <= self.model.dropout <= 1, "Dropout must be between 0 and 1"
-        assert 0 <= self.model.attention_dropout <= 1, "Attention dropout must be between 0 and 1"
+        try:
+            # Validate each section
+            self.model.validate()
+            self.training.validate(self.model)
+            self.curriculum.validate()
+            self.generation.validate()
+            
+            # Validate paths
+            assert isinstance(self.data_dir, str), "data_dir must be string"
+            assert isinstance(self.output_dir, str), "output_dir must be string"
+            assert isinstance(self.cache_dir, str), "cache_dir must be string"
+            
+            # Validate device
+            assert self.device in ["cuda", "cpu", "auto"], f"Invalid device: {self.device}"
+            
+            # Validate experiment settings
+            assert isinstance(self.experiment_name, str), "experiment_name must be string"
+            assert isinstance(self.seed, int) and self.seed >= 0, "seed must be non-negative int"
+            
+            # Cross-validation between sections
+            if self.model.vocab_size != self.training.effective_vocab_size if hasattr(self.training, 'effective_vocab_size') else True:
+                print("Warning: Model vocab size may not match training expectations")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Config validation failed: {e}")
+            return False
+    
+    def summary(self) -> str:
+        """Generate human-readable config summary"""
+        lines = [
+            f"Experiment: {self.experiment_name}",
+            f"Device: {self.device}",
+            f"Seed: {self.seed}",
+            "",
+            "Model:",
+            f"  Parameters: ~{self.model.param_count:,}",
+            f"  Architecture: {self.model.n_layers}L×{self.model.d_model}H×{self.model.n_heads}A",
+            f"  Vocabulary: {self.model.vocab_size:,} tokens",
+            f"  Sequence Length: {self.model.max_seq_len}",
+            "",
+            "Training:",
+            f"  Batch Size: {self.training.batch_size} (effective: {self.training.effective_batch_size})",
+            f"  Learning Rate: {self.training.learning_rate:.2e}",
+            f"  Max Epochs: {self.training.max_epochs}",
+            f"  Mixed Precision: {self.training.use_mixed_precision}",
+            "",
+            "Curriculum:",
+            f"  Stages: {len(self.curriculum.stages)}",
+            f"  Total Epochs: {self.curriculum.total_epochs}",
+            "",
+            "Generation:",
+            f"  Temperature: {self.generation.temperature}",
+            f"  Steps: {self.generation.num_steps}",
+            f"  Max Length: {self.generation.max_length}"
+        ]
         
-        # Validate training configuration
-        assert self.training.batch_size > 0, "Batch size must be positive"
-        assert self.training.learning_rate > 0, "Learning rate must be positive"
-        assert self.training.weight_decay >= 0, "Weight decay must be non-negative"
-        assert self.training.warmup_steps >= 0, "Warmup steps must be non-negative"
-        assert self.training.max_grad_norm > 0, "Max gradient norm must be positive"
+        return "\n".join(lines)
+    
+    def save_to_file(self, filepath: Union[str, Path]):
+        """Save current config as Python override file"""
+        config_path = Path(filepath)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Validate curriculum configuration
-        self.curriculum.validate()
+        # Generate Python config file
+        content = [
+            "# Generated configuration overrides",
+            "# Edit this file to customize your experiment",
+            "",
+            "overrides = {",
+        ]
         
-        # Validate generation configuration
-        self.generation.validate()
+        # Helper to add overrides for a section
+        def add_section_overrides(section_name: str, section, defaults):
+            for field in fields(section):
+                current_value = getattr(section, field.name)
+                default_value = getattr(defaults, field.name)
+                
+                if current_value != default_value:
+                    if isinstance(current_value, str):
+                        content.append(f'    "{section_name}.{field.name}": "{current_value}",')
+                    else:
+                        content.append(f'    "{section_name}.{field.name}": {current_value},')
         
-        # Validate path configurations
-        assert isinstance(self.data_dir, str), "Data directory must be a string"
-        assert isinstance(self.output_dir, str), "Output directory must be a string"
-        assert isinstance(self.cache_dir, str), "Cache directory must be a string"
+        # Get defaults for comparison
+        defaults = ProjectConfig.default()
         
-        # Validate device configuration
-        assert self.device in ["cuda", "cpu", "auto"], f"Invalid device: {self.device}"
+        # Add top-level overrides
+        for field in fields(self):
+            if field.name in ['model', 'training', 'curriculum', 'generation']:
+                continue  # Handle these specially
+            
+            current_value = getattr(self, field.name)
+            default_value = getattr(defaults, field.name)
+            
+            if current_value != default_value:
+                if isinstance(current_value, str):
+                    content.append(f'    "{field.name}": "{current_value}",')
+                else:
+                    content.append(f'    "{field.name}": {current_value},')
         
-        # Validate experiment settings
-        assert isinstance(self.experiment_name, str), "Experiment name must be a string"
-        assert isinstance(self.seed, int) and self.seed >= 0, "Seed must be a non-negative integer"
+        # Add section overrides
+        add_section_overrides("model", self.model, defaults.model)
+        add_section_overrides("training", self.training, defaults.training)
+        add_section_overrides("generation", self.generation, defaults.generation)
+        # Note: curriculum is complex, skip for now
         
-        return True
+        content.append("}")
+        
+        with open(config_path, 'w') as f:
+            f.write('\n'.join(content))
+        
+        print(f"Config saved to: {config_path}")
+
 
 # Convenience functions
 def get_default_config() -> ProjectConfig:
     """Get default project configuration"""
     return ProjectConfig.default()
 
-def load_config(config_path: str) -> ProjectConfig:
-    """Load configuration from file"""
-    return ProjectConfig.from_yaml(config_path)
+def get_debug_config() -> ProjectConfig:
+    """Get debug project configuration"""
+    return ProjectConfig.debug()
+
+def load_config_with_overrides(config_file: Optional[str] = None, 
+                              args: Optional[argparse.Namespace] = None,
+                              **kwargs) -> ProjectConfig:
+    """Load config with cascading overrides
+    
+    Priority: defaults < config_file < args < kwargs
+    """
+    config = ProjectConfig.default()
+    
+    if config_file:
+        config = config.override_from_file(config_file)
+    
+    if args:
+        config = config.override_from_args(args)
+    
+    if kwargs:
+        config = config.override(**kwargs)
+    
+    # Validate final config
+    if not config.validate():
+        raise ValueError("Final configuration is invalid")
+    
+    return config
