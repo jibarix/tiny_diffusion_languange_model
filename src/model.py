@@ -35,7 +35,7 @@ class RMSNorm(nn.Module):
 
 
 class RotaryPositionalEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE)"""
+    """Rotary Position Embedding (RoPE) - Fixed Version"""
     
     def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 10000.0):
         super().__init__()
@@ -43,7 +43,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.base = base
 
-        # Precompute frequency tensor
+        # Precompute frequency tensor - ensure even dimension
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
@@ -55,23 +55,38 @@ class RotaryPositionalEmbedding(nn.Module):
         # Generate position encodings
         t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
         freqs = torch.outer(t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
+        
+        # Create cos and sin embeddings with proper dimensions
+        cos = freqs.cos().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
+        sin = freqs.sin().unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim//2]
         
         # Apply rotary embedding
-        return self._apply_rotary_pos_emb(x, emb)
+        return self._apply_rotary_pos_emb(x, cos, sin)
     
-    def _apply_rotary_pos_emb(self, x: torch.Tensor, emb: torch.Tensor):
-        cos = emb.cos()
-        sin = emb.sin()
+    def _apply_rotary_pos_emb(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+        # Ensure head_dim is even for proper splitting
+        head_dim = x.size(-1)
+        if head_dim % 2 != 0:
+            # Pad to make even if necessary
+            x = F.pad(x, (0, 1))
+            head_dim += 1
         
-        # Split x into two halves
+        # Split x into two halves along the head dimension
         x1, x2 = x.chunk(2, dim=-1)
+        
+        # Expand cos/sin to match x dimensions
+        cos = cos.expand_as(x1)  # [batch_size, num_heads, seq_len, head_dim//2]
+        sin = sin.expand_as(x1)  # [batch_size, num_heads, seq_len, head_dim//2]
         
         # Apply rotation
         rotated = torch.cat([
             x1 * cos - x2 * sin,
             x1 * sin + x2 * cos
         ], dim=-1)
+        
+        # Remove padding if it was added
+        if x.size(-1) != rotated.size(-1):
+            rotated = rotated[..., :x.size(-1)]
         
         return rotated
 

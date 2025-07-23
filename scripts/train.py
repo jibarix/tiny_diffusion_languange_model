@@ -40,7 +40,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('training.log')
+        logging.FileHandler('training.log', encoding='utf-8')  # Add UTF-8 encoding
     ]
 )
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ def test_integration():
         # Quick training test
         quick_training_test(config_dict, pipeline, max_steps=3)
         
-        logger.info("🎉 Integration test PASSED! Full pipeline working correctly.")
+        logger.info("[OK] Integration test PASSED! Full pipeline working correctly.")
         return True
         
     except Exception as e:
@@ -178,13 +178,9 @@ def prepare_data(book_path: str, config: Dict[str, Any]) -> DataPipeline:
     # Create data pipeline
     pipeline = DataPipeline(config)
     
-    # Load and process the book
-    logger.info("Loading and processing text...")
-    pipeline.load_book(book_path)
-    
-    # Create curriculum
-    logger.info("Creating curriculum with difficulty scoring...")
-    pipeline.create_curriculum()
+    # Process the book (this does loading, segmentation, scoring, curriculum construction)
+    logger.info("Processing book with curriculum construction...")
+    pipeline.process_book(book_path, save_dir="data/processed")
     
     # Print summary
     pipeline.print_curriculum_summary()
@@ -390,7 +386,7 @@ Examples:
         if not args.no_eval:
             run_evaluation(best_model_path, config_dict, data_pipeline)
         
-        logger.info("🎉 Training script completed successfully!")
+        logger.info("[OK] Training script completed successfully!")
         
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")
