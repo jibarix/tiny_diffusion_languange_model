@@ -363,14 +363,19 @@ Generate text and analyze results
 
 ### Phase 4: Training
 
+**`src/training/format_datasets.py`** - **Format-Aware Dataset Classes**
+- **Purpose**: Stage-specific data formatting (sentences, evidence-claim pairs, paragraphs)
+- **Usage**: Creates different input formats for each curriculum stage
+- **Without it**: All stages would use identical sentence format, missing structural learning
+
 **`scripts/train.py`** - **Training Script**
 - **Purpose**: Execute training loop with curriculum
 - **Usage**: `python train.py --config config.yaml`
 - **Without it**: No command-line training interface
 
 **`src/training/trainer.py`** - **Training Loop**
-- **Purpose**: Epoch management, loss computation, checkpointing
-- **Usage**: Main training orchestrator
+- **Purpose**: Epoch management, loss computation, checkpointing, imports format_datasets
+- **Usage**: Main training orchestrator with format-aware curriculum
 - **Without it**: No systematic training process
 
 **`src/training/scheduler.py`** - **Curriculum Scheduling**
