@@ -1,6 +1,6 @@
 """
-Training Configuration
-Hyperparameters and training settings
+Training Configuration - FIXED VERSION
+Removes hardcoded values and makes them configurable
 """
 
 from dataclasses import dataclass
@@ -56,6 +56,12 @@ class TrainingConfig:
     label_smoothing: float = 0.0
     dropout_schedule: str = "constant"  # constant, decay
     
+    # NEW: Hardware configuration (previously hardcoded)
+    max_vram_gb: float = 8.0              # VRAM limit (was hardcoded as 8)
+    memory_safety_margin: float = 0.1     # Safety margin for memory estimation
+    bytes_per_param: int = 4              # Bytes per parameter (was hardcoded as 4)
+    memory_multiplier: float = 3.0        # Memory multiplier for model+optimizer+gradients (was hardcoded as 3)
+    
     @property
     def effective_batch_size(self) -> int:
         """Effective batch size including gradient accumulation"""
@@ -73,7 +79,8 @@ class TrainingConfig:
             batch_size=32,
             gradient_accumulation_steps=2,
             use_gradient_checkpointing=True,
-            use_mixed_precision=True
+            use_mixed_precision=True,
+            max_vram_gb=8.0,  # Explicitly set instead of hardcoded
         )
     
     @classmethod
@@ -84,7 +91,9 @@ class TrainingConfig:
             gradient_accumulation_steps=4,
             use_gradient_checkpointing=True,
             use_mixed_precision=True,
-            dataloader_num_workers=2
+            dataloader_num_workers=2,
+            max_vram_gb=8.0,
+            pin_memory=False
         )
     
     @classmethod
@@ -95,23 +104,40 @@ class TrainingConfig:
             max_epochs=2,
             eval_every=50,
             save_every=100,
-            log_every=10
+            log_every=10,
+            max_vram_gb=8.0,  # Configure instead of hardcode
         )
     
     def validate(self, model_config=None):
-        """Validate training configuration"""
+        """Validate training configuration with configurable hardware limits"""
         assert self.learning_rate > 0, "learning_rate must be positive"
         assert self.batch_size > 0, "batch_size must be positive"
         assert 0 <= self.val_split < 1, "val_split must be in [0, 1)"
         assert self.gradient_accumulation_steps > 0, "gradient_accumulation_steps must be positive"
         
-        # Memory usage estimation (if model config provided)
+        # Validate hardware configuration
+        assert self.max_vram_gb > 0, "max_vram_gb must be positive"
+        assert 0 <= self.memory_safety_margin <= 1, "memory_safety_margin must be between 0 and 1"
+        assert self.bytes_per_param > 0, "bytes_per_param must be positive"
+        assert self.memory_multiplier > 0, "memory_multiplier must be positive"
+        
+        # Memory usage estimation with CONFIGURABLE values
         if model_config is not None:
-            model_params_mb = model_config.param_count / 1e6
-            batch_mem_mb = self.batch_size * model_config.max_seq_len * 4 / 1e6  # 4 bytes per token
-            estimated_vram_gb = (model_params_mb * 3 + batch_mem_mb) / 1000  # 3x for model+optim+grads
+            # Use configurable values instead of hardcoded ones
+            model_params_mb = model_config.param_count * self.bytes_per_param / 1e6
+            batch_mem_mb = (self.batch_size * model_config.max_seq_len * 
+                           self.bytes_per_param / 1e6)
             
-            if estimated_vram_gb > 8:
-                print(f"Warning: Estimated VRAM usage {estimated_vram_gb:.1f}GB may exceed 8GB limit")
+            # Apply configurable memory multiplier and convert to GB
+            estimated_vram_gb = (model_params_mb * self.memory_multiplier + batch_mem_mb) / 1000
+            
+            # Apply safety margin to VRAM limit
+            safe_vram_limit = self.max_vram_gb * (1 - self.memory_safety_margin)
+            
+            if estimated_vram_gb > safe_vram_limit:
+                print(f"Warning: Estimated VRAM usage {estimated_vram_gb:.1f}GB may exceed "
+                      f"safe limit {safe_vram_limit:.1f}GB (max: {self.max_vram_gb:.1f}GB)")
+                print(f"Consider reducing batch_size, using gradient accumulation, or enabling "
+                      f"gradient checkpointing and mixed precision")
         
         return True

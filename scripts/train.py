@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig
+from config import ProjectConfig, ModelConfig, TrainingConfig, CurriculumConfig, GenerationConfig
 from model.diffusion import MaskedDiffusionLM
 from training.trainer import EnhancedCurriculumTrainer
 from data.pipeline import TextDataPipeline, TextSegment
@@ -254,7 +254,8 @@ def main():
         config = ProjectConfig(
             model=ModelConfig.tiny_125m(),
             training=TrainingConfig.fast_debug(),
-            curriculum=CurriculumConfig.fast_debug()
+            curriculum=CurriculumConfig.fast_debug(),
+            generation=GenerationConfig.default()
         )
         print("🐛 Fast debug mode: 1 epoch per stage")
     else:

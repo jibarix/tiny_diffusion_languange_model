@@ -39,11 +39,10 @@ def load_model_and_tokenizer(checkpoint_path: str, data_dir: str, vocab_level: i
     
     # Load tokenizer
     if tokenizer_path.exists():
-        from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
     else:
         # Fallback to GPT-2 with special tokens
-        from transformers import AutoTokenizer
+        print("Warning: Using GPT-2 tokenizer with special tokens")
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
         special_tokens = {"pad_token": "<pad>", "mask_token": "<mask>", 
                          "bos_token": "<bos>", "eos_token": "<eos>"}
@@ -53,6 +52,27 @@ def load_model_and_tokenizer(checkpoint_path: str, data_dir: str, vocab_level: i
             tokenizer.add_special_tokens(tokens_to_add)
     
     print(f"Using vocab level {vocab_level}, tokenizer size: {len(tokenizer):,}")
+    
+    # Create model
+    model = MaskedDiffusionLM(
+        vocab_size=len(tokenizer),
+        d_model=config.model.d_model,
+        n_layers=config.model.n_layers,
+        n_heads=config.model.n_heads,
+        d_ff=config.model.d_ff,
+        max_seq_len=config.model.max_seq_len,
+        dropout=config.model.dropout,
+        attention_dropout=config.model.attention_dropout,
+        use_bias=config.model.use_bias,
+        norm_eps=config.model.norm_eps,
+        pad_token_id=tokenizer.pad_token_id,
+        mask_token_id=tokenizer.mask_token_id
+    )
+    
+    # Load model weights
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    return model, tokenizer, config
 
 
 def main():
