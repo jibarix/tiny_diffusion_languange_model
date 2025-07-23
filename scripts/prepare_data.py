@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from data.pipeline import TextDataPipeline
-
+from config import PipelineConfig
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare text data for curriculum training")
@@ -33,13 +33,18 @@ def main():
     print(f"📚 Processing: {args.book}")
     print(f"📁 Output: {args.output}")
     
-    # Initialize pipeline
+    # Load pipeline config
+    pipeline_config = PipelineConfig.default()
+    if args.config:
+        # Could implement config file loading for pipeline
+        pass
+    
+    # Initialize pipeline with config
     pipeline = TextDataPipeline(
-        embedding_model=args.embedding_model,
-        n_clusters=args.clusters,
-        target_vocab_size=args.vocab_size,
+        pipeline_config=pipeline_config,
+        target_vocab_size=args.vocab_size if hasattr(args, 'vocab_size') else 25000,
         enable_argument_mining=True,
-        enable_vocab_curriculum=False  # Explicitly disable problematic feature
+        enable_vocab_curriculum=False
     )
     
     # Process text file

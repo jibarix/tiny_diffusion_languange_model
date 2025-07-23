@@ -25,7 +25,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
 # Import the new configuration
-from config.pipeline_config import PipelineConfig
+from config import PipelineConfig
 
 try:
     nltk.data.find('tokenizers/punkt')

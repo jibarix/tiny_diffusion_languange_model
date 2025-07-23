@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 import time
+from config import GenerationConfig
 
 
 class DiffusionGenerator:
@@ -17,6 +18,7 @@ class DiffusionGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.config = config or GenerationConfig.default()  # Use config instead of hardcoded values
         self.vocab_level = vocab_level
         
         self.model.eval()
@@ -88,9 +90,9 @@ class DiffusionGenerator:
     
     def generate(self,
                 prompt: str = "",
-                max_length: int = 512,
-                num_steps: int = 50,
-                temperature: float = 1.0,
+                max_length = kwargs.get('max_length', self.config.max_length),
+                num_steps = kwargs.get('num_steps', self.config.num_steps),
+                temperature = kwargs.get('temperature', self.config.temperature),
                 top_k: Optional[int] = None,
                 top_p: Optional[float] = None,
                 num_return_sequences: int = 1) -> List[str]:

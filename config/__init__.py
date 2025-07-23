@@ -326,3 +326,20 @@ def load_config_with_overrides(config_file: Optional[str] = None,
         raise ValueError("Final configuration is invalid")
     
     return config
+
+def load_config_from_args(args: argparse.Namespace) -> ProjectConfig:
+    """Standardized config loading from command line arguments"""
+    config = ProjectConfig.default()
+    
+    # Load from config file if specified
+    if hasattr(args, 'config') and args.config:
+        config = config.override_from_file(args.config)
+    
+    # Override with command line arguments
+    config = config.override_from_args(args)
+    
+    # Validate final config
+    if not config.validate():
+        raise ValueError("Configuration validation failed")
+    
+    return config

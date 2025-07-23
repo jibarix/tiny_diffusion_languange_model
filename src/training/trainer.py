@@ -30,19 +30,19 @@ from data.pipeline import TextSegment, ArgumentMiner
 class AdaptiveCurriculumScheduler:
     """Enhanced scheduler with dynamic adaptation"""
     
-    def __init__(self, curriculum_config, pipeline):
+    def __init__(self, curriculum_config, pipeline, training_config):  # Add training_config parameter
         self.config = curriculum_config
         self.pipeline = pipeline
         self.current_stage = 0
         self.current_vocab_level = 1
         self.stage_performance_history = defaultdict(list)
-        self.adaptation_window = training_config.adaptation_window
-        self.improvement_threshold = 0.01
+        self.adaptation_window = training_config.adaptation_window  # Now properly referenced
+        self.improvement_threshold = training_config.improvement_threshold
         
         # Stage transition criteria
         self.min_epochs_per_stage = training_config.min_epochs_per_stage
         self.max_epochs_per_stage = training_config.max_epochs_per_stage
-        self.performance_plateau_epochs = 10
+        self.performance_plateau_epochs = training_config.performance_plateau_epochs
         
     def should_advance_stage(self, epoch: int, recent_losses: List[float]) -> bool:
         """Determine if we should move to next curriculum stage"""
@@ -186,7 +186,7 @@ class EnhancedCurriculumTrainer:
         
         # Enhanced curriculum components
         self.curriculum_scheduler = AdaptiveCurriculumScheduler(
-            config.curriculum, pipeline
+            config.curriculum, pipeline, config.training
         )
         
         # Training state

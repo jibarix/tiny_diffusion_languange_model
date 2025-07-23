@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 sys.path.append(str(Path(__file__).parent.parent))
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-from config import ProjectConfig
+from config import ProjectConfig, GenerationConfig
 from model.diffusion import MaskedDiffusionLM
 from evaluation.generate import DiffusionGenerator
 

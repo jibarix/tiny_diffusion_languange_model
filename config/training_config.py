@@ -80,7 +80,7 @@ class TrainingConfig:
     @property
     def effective_batch_size(self) -> int:
         """Effective batch size including gradient accumulation"""
-        return self.batch_size * self.gradient_accumulation_steps
+        return None  # Will be set by pipeline if compression is used
     
     @property
     def val_batch_size_actual(self) -> int:
