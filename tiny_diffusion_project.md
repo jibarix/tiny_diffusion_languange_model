@@ -77,16 +77,16 @@ difficulty_scores = {
 ## Implementation Plan
 
 ### Phase 1: Data Pipeline
-- [ ] Load and clean any book text
-- [ ] Implement tokenizer compression based on book vocabulary
-- [ ] Create difficulty scoring system
-- [ ] Generate curriculum schedules for all three stages
+- [x] Load and clean any book text
+- [x] Implement tokenizer compression based on book vocabulary
+- [x] Create difficulty scoring system
+- [x] Generate curriculum schedules for all three stages
 
 ### Phase 2: Model Implementation
-- [ ] Implement masked diffusion transformer in PyTorch
-- [ ] Create training loop with curriculum scheduling
-- [ ] Implement masking strategies (uniform random masking)
-- [ ] Add logging and checkpointing
+- [x] Implement masked diffusion transformer in PyTorch
+- [x] Create training loop with curriculum scheduling
+- [x] Implement masking strategies (uniform random masking)
+- [x] Add logging and checkpointing
 
 ### Phase 3: Training
 - [ ] Stage I training (50 epochs)
@@ -95,10 +95,10 @@ difficulty_scores = {
 - [ ] Monitor for convergence and adjust as needed
 
 ### Phase 4: Evaluation
-- [ ] Perplexity on held-out text
-- [ ] Style similarity analysis (sentence length distribution, vocabulary usage)
-- [ ] Human evaluation of generated samples
-- [ ] Comparison with baseline autoregressive model
+- [x] Perplexity on held-out text
+- [x] Style similarity analysis (sentence length distribution, vocabulary usage)
+- [x] Human evaluation of generated samples
+- [x] Comparison with baseline autoregressive model
 
 ## Training Configuration
 
@@ -142,45 +142,51 @@ tiny-diffusion/
 ├── requirements.txt
 ├── config/
 │   ├── __init__.py           # Unified ProjectConfig namespace
-│   ├── model_config.py
-│   ├── training_config.py    # Imports model + curriculum configs
-│   └── curriculum_config.py
+│   ├── model_config.py       # Architecture parameters (125M+ configurable)
+│   ├── training_config.py    # Training hyperparameters + hardware config
+│   ├── curriculum_config.py  # 3-stage learning schedule
+│   ├── generation_config.py  # Text generation parameters
+│   ├── pipeline_config.py    # Data processing parameters
+│   └── evaluation_config.py  # Evaluation & benchmarking config
 ├── data/
 │   ├── raw/
 │   │   └── [your_book].txt
 │   ├── processed/
-│   │   ├── sentences.pkl
-│   │   ├── difficulty_scores.pkl
-│   │   └── curriculum_data.pkl
-│   └── tokenizer/
-│       └── book_tokenizer.json
+│   │   ├── segments.pkl
+│   │   ├── curriculum_splits.pkl
+│   │   ├── vocab_curriculum.pkl
+│   │   └── dynamic_scorer.pkl
+│   └── tokenizer/             # Or tokenizer_level_1/ through tokenizer_level_5/
+│       └── compressed_tokenizer.json
 ├── src/
 │   ├── model/
-│   │   ├── attention.py      # Used by transformer.py
-│   │   ├── transformer.py    # Uses attention.py
-│   │   └── diffusion.py      # Orchestrates transformer
+│   │   ├── attention.py      # Multi-head attention with RoPE
+│   │   ├── transformer.py    # Transformer blocks with SwiGLU
+│   │   └── diffusion.py      # Masked diffusion orchestrator
 │   ├── data/
-│   │   └── pipeline.py       # Unified: preprocess → curriculum → dataset
+│   │   └── pipeline.py       # Complete data processing pipeline
 │   ├── training/
-│   │   ├── trainer.py
-│   │   ├── scheduler.py
-│   │   └── metrics.py        # Training-specific metrics
+│   │   ├── trainer.py        # Enhanced curriculum trainer
+│   │   ├── scheduler.py      # Curriculum scheduling logic
+│   │   ├── metrics.py        # Training metrics tracking
+│   │   └── format_datasets.py # Stage-specific dataset formats
 │   └── evaluation/
-│       ├── generate.py
-│       ├── metrics.py        # Evaluation-specific metrics  
-│       └── analysis.py
+│       ├── generate.py       # Text generation engine
+│       ├── metrics.py        # Evaluation metrics (style, coherence)
+│       └── analysis.py       # Results analysis tools
 ├── scripts/                  # Entry points - standalone
-│   ├── prepare_data.py
-│   ├── train.py
-│   ├── generate.py
-│   └── evaluate.py
-├── notebooks/                # Independent analysis tools
+│   ├── prepare_data.py       # Data preparation script
+│   ├── train.py              # Training script with testing modes
+│   ├── generate.py           # Text generation script
+│   └── evaluate.py           # Model evaluation script
+├── notebooks/                # Optional analysis tools
 │   ├── data_exploration.ipynb
 │   ├── curriculum_analysis.ipynb
 │   └── results_analysis.ipynb
 └── outputs/
     ├── checkpoints/
     ├── logs/
+    ├── tensorboard/
     └── samples/
 ```
 
@@ -195,6 +201,71 @@ Execute curriculum learning with monitoring
 ### **Inference Workflow** (Ongoing Usage)
 Generate text and analyze results
 
+## Configuration System
+
+The project uses a comprehensive configuration system with cascading overrides:
+
+### **Core Configuration Files**
+
+**`config/__init__.py`** - **Unified Config Manager**
+- **Purpose**: Single entry point for all configurations with override system
+- **Features**: Command line → config file → programmatic overrides
+- **Usage**: `from config import ProjectConfig; cfg = ProjectConfig.default()`
+
+**`config/model_config.py`** - **Architecture Parameters**
+- **Purpose**: 125+ configurable model parameters (d_model, layers, vocab, RoPE, etc.)
+- **Presets**: `tiny_125m()`, `memory_efficient_125m()`, `experimental_125m()`
+- **Features**: Parameter validation, memory estimation, comparable configs
+
+**`config/training_config.py`** - **Training Hyperparameters**
+- **Purpose**: Learning rates, batch sizes, hardware limits, memory optimization
+- **Features**: Automatic VRAM estimation, gradient accumulation, mixed precision
+- **Presets**: `default()`, `memory_efficient()`, `fast_debug()`
+
+**`config/curriculum_config.py`** - **Learning Schedule**
+- **Purpose**: 3-stage curriculum with masking rates, data selection, format types
+- **Features**: Stage transitions, pseudo-data generation, difficulty thresholds
+- **Presets**: `three_stage()`, `single_stage()`, `fast_debug()`, `research_config()`
+
+**`config/generation_config.py`** - **Text Generation**
+- **Purpose**: Temperature, top-k/top-p, diffusion steps, confidence scheduling
+- **Features**: Multiple sampling strategies, style control, vocab level adaptation
+- **Presets**: `default()`, `creative()`, `conservative()`, `fast()`
+
+**`config/pipeline_config.py`** - **Data Processing**
+- **Purpose**: All text processing parameters (difficulty scoring, clustering, etc.)
+- **Features**: Lexical analysis, syntactic complexity, thematic centrality
+- **Presets**: `default()`, `fast_processing()`, `high_quality()`
+
+**`config/evaluation_config.py`** - **Evaluation & Benchmarking**
+- **Purpose**: Evaluation metrics, quality thresholds, performance benchmarks
+- **Features**: Perplexity calculation, style analysis, coherence metrics
+- **Presets**: `default()`, `fast()`, `comprehensive()`, `memory_efficient()`
+
+### **Configuration Usage Examples**
+
+```python
+# Default configuration
+config = ProjectConfig.default()
+
+# Override with dot notation
+config = config.override(**{
+    "model.d_model": 512,
+    "training.batch_size": 16,
+    "curriculum.stages[0].epochs": 25
+})
+
+# Load from config file
+config = config.override_from_file("experiment.py")
+
+# Override from command line
+config = config.override_from_args(args)
+
+# Quick presets
+debug_config = ProjectConfig.debug()
+research_config = ProjectConfig.comprehensive()
+```
+
 ## File Descriptions (Execution Order)
 
 ### Development Workflow
@@ -202,24 +273,39 @@ Generate text and analyze results
 #### Phase 1: Configuration Setup
 
 **`config/__init__.py`** - **Unified Config Manager**
-- **Purpose**: Single entry point for all configurations
-- **Usage**: `from config import ProjectConfig; cfg = ProjectConfig()`
+- **Purpose**: Single entry point for all configurations with override cascading
+- **Usage**: `from config import ProjectConfig; cfg = ProjectConfig.default()`
 - **Without it**: Manual imports, potential conflicts between config files
 
 **`config/model_config.py`** - **Architecture Parameters**
-- **Purpose**: Model size, layers, vocab, sequence length
-- **Usage**: Defines transformer architecture (125M params, 12 layers, etc.)
+- **Purpose**: Model size, layers, vocab, sequence length (125+ parameters)
+- **Usage**: Defines transformer architecture with validation and presets
 - **Without it**: Hardcoded values scattered throughout code
 
 **`config/curriculum_config.py`** - **Learning Schedule**
 - **Purpose**: Masking rates per stage (75-90%, 40-60%, 10-30%)
-- **Usage**: Defines 3-stage curriculum progression
+- **Usage**: Defines 3-stage curriculum progression with format types
 - **Without it**: Random training order, no structured learning
 
 **`config/training_config.py`** - **Training Hyperparameters**
-- **Purpose**: Learning rate, batch size, optimizer settings, imports curriculum schedules
-- **Usage**: Controls training loop behavior
+- **Purpose**: Learning rate, batch size, optimizer, hardware limits
+- **Usage**: Controls training loop behavior with memory estimation
 - **Without it**: No systematic hyperparameter management
+
+**`config/generation_config.py`** - **Text Generation Parameters**
+- **Purpose**: Temperature, sampling, diffusion steps, confidence scheduling
+- **Usage**: Controls text generation quality and style
+- **Without it**: Default generation behavior, no fine-tuning control
+
+**`config/pipeline_config.py`** - **Data Processing Parameters**
+- **Purpose**: Text processing, difficulty scoring, clustering parameters
+- **Usage**: Configures entire data pipeline processing
+- **Without it**: Hardcoded processing parameters, no pipeline flexibility
+
+**`config/evaluation_config.py`** - **Evaluation Parameters**
+- **Purpose**: Metrics, thresholds, benchmarking parameters
+- **Usage**: Controls evaluation quality and scope
+- **Without it**: Basic evaluation only, no comprehensive analysis
 
 #### Phase 2: Data Preparation
 
@@ -230,48 +316,53 @@ Generate text and analyze results
 
 **`src/data/pipeline.py`** - **Complete Data Processing**
 - **Purpose**: Text → sentences → difficulty scores → curriculum → dataset
-- **Usage**: Single class handling entire data flow
+- **Usage**: Single class handling entire data flow with config-driven processing
 - **Without it**: Manual data processing, no curriculum construction
 
 #### Phase 3: Model Architecture
 
 **`src/model/attention.py`** - **Multi-Head Attention**
-- **Purpose**: Bidirectional attention mechanism (no causal masking)
-- **Usage**: Core transformer component, imported by transformer.py
+- **Purpose**: Bidirectional attention mechanism (no causal masking) with RoPE
+- **Usage**: Core transformer component with configurable parameters
 - **Without it**: No transformer architecture possible
 
 **`src/model/transformer.py`** - **Transformer Blocks**
-- **Purpose**: Layer norm, attention, feedforward layers
-- **Usage**: Stacks attention blocks, imported by diffusion.py
+- **Purpose**: Layer norm, attention, feedforward layers with SwiGLU
+- **Usage**: Stacks attention blocks with configurable architecture
 - **Without it**: No neural network backbone
 
 **`src/model/diffusion.py`** - **Masked Diffusion Logic**
-- **Purpose**: Masking/unmasking, denoising objective
-- **Usage**: Orchestrates training and inference
+- **Purpose**: Masking/unmasking, denoising objective, generation
+- **Usage**: Orchestrates training and inference with configurable strategies
 - **Without it**: Just a regular language model, not diffusion
 
 ### Training Workflow
 
 #### Phase 4: Training
 
+**`src/training/format_datasets.py`** - **Format-Aware Dataset Classes**
+- **Purpose**: Stage-specific data formatting (sentences, pairs, paragraphs)
+- **Usage**: Creates different input formats for each curriculum stage
+- **Without it**: All stages would use identical format, missing structural learning
+
 **`scripts/train.py`** - **Training Script**
-- **Purpose**: Execute training loop with curriculum
-- **Usage**: `python train.py --config config.yaml`
+- **Purpose**: Execute training loop with curriculum and config system
+- **Usage**: `python train.py` or `python train.py --debug`
 - **Without it**: No command-line training interface
 
-**`src/training/trainer.py`** - **Training Loop**
-- **Purpose**: Epoch management, loss computation, checkpointing
-- **Usage**: Main training orchestrator
+**`src/training/trainer.py`** - **Enhanced Training Loop**
+- **Purpose**: Curriculum-aware training with dynamic adaptation
+- **Usage**: Main training orchestrator with config-driven behavior
 - **Without it**: No systematic training process
 
 **`src/training/scheduler.py`** - **Curriculum Scheduling**
-- **Purpose**: Stage transitions, masking rate changes
-- **Usage**: Controls progression through 3 stages
+- **Purpose**: Stage transitions, masking rate changes, adaptive scheduling
+- **Usage**: Controls progression through 3 stages with config parameters
 - **Without it**: Static training, no curriculum learning
 
 **`src/training/metrics.py`** - **Training Metrics**
-- **Purpose**: Loss tracking, perplexity calculation during training
-- **Usage**: Real-time training monitoring
+- **Purpose**: Loss tracking, perplexity calculation, progress monitoring
+- **Usage**: Real-time training monitoring with configurable windows
 - **Without it**: No training progress visibility
 
 ### Inference Workflow
@@ -279,154 +370,107 @@ Generate text and analyze results
 #### Phase 5: Generation & Evaluation
 
 **`scripts/generate.py`** - **Generation Script**
-- **Purpose**: Generate text from trained checkpoint
-- **Usage**: `python generate.py --prompt "The origin of"`
-- **Without it**: No easy text generation
+- **Purpose**: Generate text from trained checkpoint with vocab levels
+- **Usage**: `python generate.py --prompt "The origin of" --vocab-level 5`
+- **Without it**: No easy text generation interface
 
-**`src/evaluation/generate.py`** - **Text Generation**
-- **Purpose**: Inference pipeline, sampling strategies
-- **Usage**: Generate text from trained model
+**`src/evaluation/generate.py`** - **Text Generation Engine**
+- **Purpose**: Inference pipeline, sampling strategies, confidence control
+- **Usage**: Generate text with configurable parameters
 - **Without it**: No way to test model output
 
 **`scripts/evaluate.py`** - **Evaluation Script**
-- **Purpose**: Run full evaluation suite
-- **Usage**: `python evaluate.py --checkpoint model.pt`
+- **Purpose**: Run comprehensive evaluation suite
+- **Usage**: `python evaluate.py --checkpoint model.pt --data-dir data/processed`
 - **Without it**: Manual evaluation process
 
 **`src/evaluation/metrics.py`** - **Evaluation Metrics**
-- **Purpose**: Style similarity, coherence analysis, final assessment
-- **Usage**: Model quality evaluation
+- **Purpose**: Style similarity, coherence analysis, quality assessment
+- **Usage**: Comprehensive model evaluation with configurable thresholds
 - **Without it**: No systematic performance measurement
 
 **`src/evaluation/analysis.py`** - **Results Analysis**
-- **Purpose**: Compare against baselines, visualizations
-- **Usage**: Comprehensive model evaluation
+- **Purpose**: Compare against baselines, visualizations, detailed analysis
+- **Usage**: Comprehensive model evaluation and comparison
 - **Without it**: No comparative analysis
 
-#### Phase 6: Optional Analysis
+#### Phase 6: Optional Analysis (LATER STAGE - NOT NEEDED)
 
 **`notebooks/`** - **Interactive Analysis Tools**
 - **Purpose**: Data exploration, curriculum analysis, results visualization
 - **Usage**: Jupyter notebooks for deeper investigation
 - **Without it**: Limited insight into model behavior and training dynamics
 
-### Phase 1: Configuration Setup
+## Quick Start Guide
 
-**`config/__init__.py`** - **Unified Config Manager**
-- **Purpose**: Single entry point for all configurations
-- **Usage**: `from config import ProjectConfig; cfg = ProjectConfig()`
-- **Without it**: Manual imports, potential conflicts between config files
+### 1. **Setup Environment**
+```bash
+# Install dependencies
+pip install torch transformers sentence-transformers scikit-learn nltk spacy textstat
 
-**`config/model_config.py`** - **Architecture Parameters**
-- **Purpose**: Model size, layers, vocab, sequence length
-- **Usage**: Defines transformer architecture (125M params, 12 layers, etc.)
-- **Without it**: Hardcoded values scattered throughout code
+# Download spaCy model
+python -m spacy download en_core_web_sm
 
-**`config/curriculum_config.py`** - **Learning Schedule**
-- **Purpose**: Masking rates per stage (75-90%, 40-60%, 10-30%)
-- **Usage**: Defines 3-stage curriculum progression
-- **Without it**: Random training order, no structured learning
+# Test installation
+python scripts/train.py --test              # Ultra-fast test (10s)
+python scripts/train.py --test-integration  # Integration test (30s)
+```
 
-**`config/training_config.py`** - **Training Hyperparameters**
-- **Purpose**: Learning rate, batch size, optimizer settings, imports curriculum schedules
-- **Usage**: Controls training loop behavior
-- **Without it**: No systematic hyperparameter management
+### 2. **Prepare Data**
+```bash
+# Clean previous runs
+./clean.sh quick
 
-### Phase 2: Data Preparation
+# Prepare data from any book
+python scripts/prepare_data.py --book data/raw/frankenstein.txt --output data/processed
+```
 
-**`scripts/prepare_data.py`** - **Data Preparation Script**
-- **Purpose**: Run data pipeline, create curriculum
-- **Usage**: `python prepare_data.py --book path/to/book.txt`
-- **Without it**: Manual data preparation
+### 3. **Train Model**
+```bash
+# Debug mode (fast, 1 epoch per stage)
+python scripts/train.py --debug --data-dir data/processed
 
-**`src/data/pipeline.py`** - **Complete Data Processing**
-- **Purpose**: Text → sentences → difficulty scores → curriculum → dataset
-- **Usage**: Single class handling entire data flow
-- **Without it**: Manual data processing, no curriculum construction
+# Full training (3-stage curriculum)
+python scripts/train.py --data-dir data/processed
 
-### Phase 3: Model Architecture
+# Memory-efficient training
+python scripts/train.py --config memory_efficient --data-dir data/processed
+```
 
-**`src/model/attention.py`** - **Multi-Head Attention**
-- **Purpose**: Bidirectional attention mechanism (no causal masking)
-- **Usage**: Core transformer component, imported by transformer.py
-- **Without it**: No transformer architecture possible
+### 4. **Generate Text**
+```bash
+# Generate from trained model
+python scripts/generate.py --checkpoint outputs/best_model.pt --prompt "The origin of"
 
-**`src/model/transformer.py`** - **Transformer Blocks**
-- **Purpose**: Layer norm, attention, feedforward layers
-- **Usage**: Stacks attention blocks, imported by diffusion.py
-- **Without it**: No neural network backbone
+# Interactive generation
+python scripts/generate.py --checkpoint outputs/best_model.pt --interactive
 
-**`src/model/diffusion.py`** - **Masked Diffusion Logic**
-- **Purpose**: Masking/unmasking, denoising objective
-- **Usage**: Orchestrates training and inference
-- **Without it**: Just a regular language model, not diffusion
+# Generate with specific vocab level
+python scripts/generate.py --checkpoint outputs/best_model.pt --vocab-level 3 --prompt "Science"
+```
 
-### Phase 4: Training
+### 5. **Evaluate Model**
+```bash
+# Full evaluation
+python scripts/evaluate.py --checkpoint outputs/best_model.pt --data-dir data/processed
 
-**`src/training/format_datasets.py`** - **Format-Aware Dataset Classes**
-- **Purpose**: Stage-specific data formatting (sentences, evidence-claim pairs, paragraphs)
-- **Usage**: Creates different input formats for each curriculum stage
-- **Without it**: All stages would use identical sentence format, missing structural learning
+# Fast evaluation
+python scripts/evaluate.py --checkpoint outputs/best_model.pt --data-dir data/processed --eval-batch-size 4 --eval-samples 50
+```
 
-**`scripts/train.py`** - **Training Script**
-- **Purpose**: Execute training loop with curriculum
-- **Usage**: `python train.py --config config.yaml`
-- **Without it**: No command-line training interface
+## Testing Options
 
-**`src/training/trainer.py`** - **Training Loop**
-- **Purpose**: Epoch management, loss computation, checkpointing, imports format_datasets
-- **Usage**: Main training orchestrator with format-aware curriculum
-- **Without it**: No systematic training process
-
-**`src/training/scheduler.py`** - **Curriculum Scheduling**
-- **Purpose**: Stage transitions, masking rate changes
-- **Usage**: Controls progression through 3 stages
-- **Without it**: Static training, no curriculum learning
-
-**`src/training/metrics.py`** - **Training Metrics**
-- **Purpose**: Loss tracking, perplexity calculation during training
-- **Usage**: Real-time training monitoring
-- **Without it**: No training progress visibility
-
-### Phase 5: Generation & Evaluation
-
-**`scripts/generate.py`** - **Generation Script**
-- **Purpose**: Generate text from trained checkpoint
-- **Usage**: `python generate.py --prompt "The origin of"`
-- **Without it**: No easy text generation
-
-**`src/evaluation/generate.py`** - **Text Generation**
-- **Purpose**: Inference pipeline, sampling strategies
-- **Usage**: Generate text from trained model
-- **Without it**: No way to test model output
-
-**`scripts/evaluate.py`** - **Evaluation Script**
-- **Purpose**: Run full evaluation suite
-- **Usage**: `python evaluate.py --checkpoint model.pt`
-- **Without it**: Manual evaluation process
-
-**`src/evaluation/metrics.py`** - **Evaluation Metrics**
-- **Purpose**: Style similarity, coherence analysis, final assessment
-- **Usage**: Model quality evaluation
-- **Without it**: No systematic performance measurement
-
-**`src/evaluation/analysis.py`** - **Results Analysis**
-- **Purpose**: Compare against baselines, visualizations
-- **Usage**: Comprehensive model evaluation
-- **Without it**: No comparative analysis
-
-### Phase 6: Optional Analysis
-
-**`notebooks/`** - **Interactive Analysis Tools**
-- **Purpose**: Data exploration, curriculum analysis, results visualization
-- **Usage**: Jupyter notebooks for deeper investigation
-- **Without it**: Limited insight into model behavior and training dynamics
+| Command | Duration | Purpose |
+|---------|----------|---------|
+| `--test` | 10s | Verify model architecture works |
+| `--test-integration` | 30s | Test full training pipeline |
+| `--debug` | Fast | Train with 1 epoch per stage |
 
 ## Potential Challenges & Mitigations
 
 ### Memory Constraints
 - **Issue**: 8GB VRAM limitation
-- **Solution**: Gradient checkpointing, smaller batch sizes, mixed precision training
+- **Solution**: Gradient checkpointing, smaller batch sizes, mixed precision training, memory-efficient config
 
 ### Overfitting Risk
 - **Issue**: Single book training data
@@ -443,17 +487,9 @@ Generate text and analyze results
 ## Success Metrics
 
 1. **Technical Success**: Model converges and generates coherent text
-2. **Style Success**: Generated text recognizably based on single book training
+2. **Style Success**: Generated text recognizably matches source book style
 3. **Educational Success**: Deep understanding of curriculum learning and diffusion models
 4. **Fun Success**: Enjoy the process and share interesting results
-
-## Timeline: 5-Week Project
-
-- **Week 1**: Data preparation and curriculum design
-- **Week 2**: Model implementation and testing
-- **Week 3**: Stage I & II training
-- **Week 4**: Stage III training and hyperparameter tuning
-- **Week 5**: Evaluation, analysis, and documentation
 
 ## Resources & References
 
@@ -464,9 +500,10 @@ Generate text and analyze results
 
 ### Implementation References
 - Hugging Face Transformers for model architecture
-- PyTorch Lightning for training infrastructure
-- Weights & Biases for experiment tracking
+- PyTorch for deep learning framework
+- Sentence Transformers for text embeddings
+- spaCy and NLTK for text processing
 
 ---
 
-*This project represents a practical exploration of cutting-edge research in a fun, educational context. While the goal is enjoyment and learning, we're committed to following best practices and rigorous evaluation.*
+*This project represents a practical exploration of cutting-edge research in a fun, educational context. The comprehensive configuration system and cleanup tools make it easy to experiment with different approaches while maintaining code quality and reproducibility.*
