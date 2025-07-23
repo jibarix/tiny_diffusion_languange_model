@@ -49,9 +49,13 @@ class CurriculumConfig:
     transition_epochs: int = 5  # Gradual transition between stages
     reset_optimizer: bool = True  # Reset optimizer between stages
     
+    # Pseudo data generation (Stage 3)
+    pseudo_data_max_samples: int = 100  # Maximum pseudo samples to generate
+    pseudo_data_ratio: float = 0.25     # Ratio of pseudo to real data (1/4)
+    
     @classmethod
     def three_stage(cls) -> 'CurriculumConfig':
-        """Default three-stage curriculum for Micro Diffusion project"""
+        """Default three-stage curriculum for project"""
         stages = [
             StageConfig(
                 name="foundation",

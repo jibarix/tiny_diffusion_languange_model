@@ -98,19 +98,20 @@ class TrainingConfig:
             log_every=10
         )
     
-    def validate(self):
+    def validate(self, model_config=None):
         """Validate training configuration"""
         assert self.learning_rate > 0, "learning_rate must be positive"
         assert self.batch_size > 0, "batch_size must be positive"
         assert 0 <= self.val_split < 1, "val_split must be in [0, 1)"
         assert self.gradient_accumulation_steps > 0, "gradient_accumulation_steps must be positive"
         
-        # Memory usage estimation
-        model_params_mb = 125  # ~125M parameters
-        batch_mem_mb = self.batch_size * 512 * 4 / 1e6  # 4 bytes per token
-        estimated_vram_gb = (model_params_mb * 3 + batch_mem_mb) / 1000  # 3x for model+optim+grads
-        
-        if estimated_vram_gb > 8:
-            print(f"Warning: Estimated VRAM usage {estimated_vram_gb:.1f}GB may exceed 8GB limit")
+        # Memory usage estimation (if model config provided)
+        if model_config is not None:
+            model_params_mb = model_config.param_count / 1e6
+            batch_mem_mb = self.batch_size * model_config.max_seq_len * 4 / 1e6  # 4 bytes per token
+            estimated_vram_gb = (model_params_mb * 3 + batch_mem_mb) / 1000  # 3x for model+optim+grads
+            
+            if estimated_vram_gb > 8:
+                print(f"Warning: Estimated VRAM usage {estimated_vram_gb:.1f}GB may exceed 8GB limit")
         
         return True

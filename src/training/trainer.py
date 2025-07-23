@@ -1,5 +1,5 @@
 """
-Enhanced Curriculum Trainer with Dynamic Adaptation
+Enhanced Curriculum Trainer with Dynamic Adaptation - FIXED VERSION
 Implements research-aligned curriculum learning for diffusion models
 """
 
@@ -286,19 +286,57 @@ class EnhancedCurriculumTrainer:
         )
         
     def _setup_logging(self):
-        """Setup comprehensive logging"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(self.output_dir / 'enhanced_train.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        """Setup comprehensive logging with proper file handle management"""
+        # Create a named logger instead of using basicConfig
+        self.logger = logging.getLogger(f"trainer_{id(self)}")  # Unique logger name
+        self.logger.setLevel(logging.INFO)
+        
+        # Clear any existing handlers
+        self.logger.handlers.clear()
+        
+        # Create formatters
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        
+        # File handler
+        log_file = self.output_dir / 'enhanced_train.log'
+        self.file_handler = logging.FileHandler(log_file)
+        self.file_handler.setLevel(logging.INFO)
+        self.file_handler.setFormatter(formatter)
+        self.logger.addHandler(self.file_handler)
+        
+        # Console handler
+        self.console_handler = logging.StreamHandler()
+        self.console_handler.setLevel(logging.INFO)
+        self.console_handler.setFormatter(formatter)
+        self.logger.addHandler(self.console_handler)
+        
+        # Prevent propagation to root logger
+        self.logger.propagate = False
         
         # Enhanced tensorboard
         self.writer = SummaryWriter(self.output_dir / 'tensorboard')
+        
+    def cleanup_logging(self):
+        """Properly cleanup all logging resources"""
+        # Close and remove file handler
+        if hasattr(self, 'file_handler'):
+            self.file_handler.close()
+            self.logger.removeHandler(self.file_handler)
+            del self.file_handler
+        
+        # Close and remove console handler
+        if hasattr(self, 'console_handler'):
+            self.console_handler.close()
+            self.logger.removeHandler(self.console_handler)
+            del self.console_handler
+        
+        # Close tensorboard writer
+        if hasattr(self, 'writer'):
+            self.writer.close()
+            del self.writer
+        
+        # Clear logger handlers
+        self.logger.handlers.clear()
         
     def _setup_mixed_precision(self):
         """Setup mixed precision training"""
@@ -335,7 +373,10 @@ class EnhancedCurriculumTrainer:
             if hasattr(self, 'stage_2_model_path') and os.path.exists(self.stage_2_model_path):
                 stage_2_segments = self.pipeline.get_stage_data(2, vocab_level)
                 pseudo_texts = self.pipeline.generate_pseudo_data(
-                    None, stage_2_segments, num_samples=min(100, len(segments) // 4)
+                    None, stage_2_segments, num_samples=min(
+                        self.config.curriculum.pseudo_data_max_samples,
+                        int(len(segments) * self.config.curriculum.pseudo_data_ratio)
+                    )
                 )
             
             dataset = SelfTrainingDataset(segments, pseudo_texts, tokenizer, self.config.model.max_seq_len)
@@ -557,108 +598,112 @@ class EnhancedCurriculumTrainer:
         
         recent_losses = deque(maxlen=20)
         
-        # Training loop through curriculum stages
-        for stage_idx in range(len(self.config.curriculum.stages)):
-            stage = stage_idx + 1
-            stage_config = self.config.curriculum.stages[stage_idx]
-            
-            self.curriculum_scheduler.current_stage = stage_idx
-            self.stage_start_epoch = self.current_epoch
-            self.stage_start_loss = None
-            
-            self.logger.info(f"\n{'='*20} STAGE {stage}: {stage_config.name.upper()} {'='*20}")
-            
-            # Vocabulary curriculum within each stage
-            max_vocab_level = getattr(self.pipeline.vocab_curriculum, 'max_level', 3) if self.pipeline.vocab_curriculum else 1
-            
-            for vocab_level in range(1, max_vocab_level + 1):
-                if vocab_level > 1:
-                    self.logger.info(f"\n--- Advancing to Vocabulary Level {vocab_level} ---")
+        try:
+            # Training loop through curriculum stages
+            for stage_idx in range(len(self.config.curriculum.stages)):
+                stage = stage_idx + 1
+                stage_config = self.config.curriculum.stages[stage_idx]
                 
-                self.curriculum_scheduler.current_vocab_level = vocab_level
+                self.curriculum_scheduler.current_stage = stage_idx
+                self.stage_start_epoch = self.current_epoch
+                self.stage_start_loss = None
                 
-                # Create stage and vocab-specific dataloader
-                train_dataloader = self.create_stage_dataloader(
-                    stage, vocab_level, self.config.training.batch_size
-                )
+                self.logger.info(f"\n{'='*20} STAGE {stage}: {stage_config.name.upper()} {'='*20}")
                 
-                if len(train_dataloader) == 0:
-                    self.logger.warning(f"No data for stage {stage}, vocab level {vocab_level}")
-                    continue
+                # Vocabulary curriculum within each stage
+                max_vocab_level = getattr(self.pipeline.vocab_curriculum, 'max_level', 3) if self.pipeline.vocab_curriculum else 1
                 
-                # Reset optimizer for new stage
-                if stage > 1 and vocab_level == 1 and self.config.curriculum.reset_optimizer:
-                    self._setup_optimizer()
-                    self.logger.info("Optimizer reset for new stage")
-                
-                # Train for this vocab level
-                vocab_start_loss = None
-                epochs_since_vocab_start = 0
-                
-                while epochs_since_vocab_start < stage_config.epochs:
-                    self.current_epoch += 1
-                    epochs_since_vocab_start += 1
+                for vocab_level in range(1, max_vocab_level + 1):
+                    if vocab_level > 1:
+                        self.logger.info(f"\n--- Advancing to Vocabulary Level {vocab_level} ---")
                     
-                    # Train epoch
-                    start_time = time.time()
-                    train_metrics = self.train_epoch(train_dataloader, stage, vocab_level)
-                    epoch_time = time.time() - start_time
+                    self.curriculum_scheduler.current_vocab_level = vocab_level
                     
-                    if vocab_start_loss is None:
-                        vocab_start_loss = train_metrics['loss']
-                    if self.stage_start_loss is None:
-                        self.stage_start_loss = train_metrics['loss']
-                    
-                    recent_losses.append(train_metrics['loss'])
-                    
-                    # Validate periodically
-                    if self.current_epoch % 5 == 0:
-                        val_metrics = self.validate()
-                        
-                        # Check for best model
-                        if val_metrics['loss'] < self.best_val_loss:
-                            self.best_val_loss = val_metrics['loss']
-                            self.save_checkpoint(stage, vocab_level, is_best=True)
-                        
-                        self.logger.info(
-                            f"Stage {stage}, Vocab {vocab_level}, Epoch {self.current_epoch}: "
-                            f"Train Loss={train_metrics['loss']:.4f}, "
-                            f"Val Loss={val_metrics['loss']:.4f}, "
-                            f"Val PPL={val_metrics['perplexity']:.2f}, "
-                            f"Time={epoch_time:.1f}s"
-                        )
-                        
-                        # Tensorboard logging
-                        self.writer.add_scalar('val/loss', val_metrics['loss'], self.global_step)
-                        self.writer.add_scalar('val/perplexity', val_metrics['perplexity'], self.global_step)
-                    
-                    # Check vocabulary advancement
-                    if (vocab_level < max_vocab_level and 
-                        self.curriculum_scheduler.should_advance_vocab_level(
-                            train_metrics['loss'], vocab_start_loss)):
-                        self.logger.info(f"Advancing from vocab level {vocab_level} to {vocab_level + 1}")
-                        break
-                    
-                    # Check stage advancement  
-                    if self.curriculum_scheduler.should_advance_stage(
-                        epochs_since_vocab_start, list(recent_losses)):
-                        self.logger.info(f"Stage {stage} completed after {epochs_since_vocab_start} epochs")
-                        break
-                    
-                    # Save checkpoint
-                    if self.global_step % self.config.training.save_every == 0:
-                        self.save_checkpoint(stage, vocab_level)
-                
-                # Record stage performance
-                if recent_losses:
-                    self.curriculum_scheduler.stage_performance_history[stage].append(
-                        np.mean(list(recent_losses)[-10:])
+                    # Create stage and vocab-specific dataloader
+                    train_dataloader = self.create_stage_dataloader(
+                        stage, vocab_level, self.config.training.batch_size
                     )
+                    
+                    if len(train_dataloader) == 0:
+                        self.logger.warning(f"No data for stage {stage}, vocab level {vocab_level}")
+                        continue
+                    
+                    # Reset optimizer for new stage
+                    if stage > 1 and vocab_level == 1 and self.config.curriculum.reset_optimizer:
+                        self._setup_optimizer()
+                        self.logger.info("Optimizer reset for new stage")
+                    
+                    # Train for this vocab level
+                    vocab_start_loss = None
+                    epochs_since_vocab_start = 0
+                    
+                    while epochs_since_vocab_start < stage_config.epochs:
+                        self.current_epoch += 1
+                        epochs_since_vocab_start += 1
+                        
+                        # Train epoch
+                        start_time = time.time()
+                        train_metrics = self.train_epoch(train_dataloader, stage, vocab_level)
+                        epoch_time = time.time() - start_time
+                        
+                        if vocab_start_loss is None:
+                            vocab_start_loss = train_metrics['loss']
+                        if self.stage_start_loss is None:
+                            self.stage_start_loss = train_metrics['loss']
+                        
+                        recent_losses.append(train_metrics['loss'])
+                        
+                        # Validate periodically
+                        if self.current_epoch % 5 == 0:
+                            val_metrics = self.validate()
+                            
+                            # Check for best model
+                            if val_metrics['loss'] < self.best_val_loss:
+                                self.best_val_loss = val_metrics['loss']
+                                self.save_checkpoint(stage, vocab_level, is_best=True)
+                            
+                            self.logger.info(
+                                f"Stage {stage}, Vocab {vocab_level}, Epoch {self.current_epoch}: "
+                                f"Train Loss={train_metrics['loss']:.4f}, "
+                                f"Val Loss={val_metrics['loss']:.4f}, "
+                                f"Val PPL={val_metrics['perplexity']:.2f}, "
+                                f"Time={epoch_time:.1f}s"
+                            )
+                            
+                            # Tensorboard logging
+                            self.writer.add_scalar('val/loss', val_metrics['loss'], self.global_step)
+                            self.writer.add_scalar('val/perplexity', val_metrics['perplexity'], self.global_step)
+                        
+                        # Check vocabulary advancement
+                        if (vocab_level < max_vocab_level and 
+                            self.curriculum_scheduler.should_advance_vocab_level(
+                                train_metrics['loss'], vocab_start_loss)):
+                            self.logger.info(f"Advancing from vocab level {vocab_level} to {vocab_level + 1}")
+                            break
+                        
+                        # Check stage advancement  
+                        if self.curriculum_scheduler.should_advance_stage(
+                            epochs_since_vocab_start, list(recent_losses)):
+                            self.logger.info(f"Stage {stage} completed after {epochs_since_vocab_start} epochs")
+                            break
+                        
+                        # Save checkpoint
+                        if self.global_step % self.config.training.save_every == 0:
+                            self.save_checkpoint(stage, vocab_level)
+                    
+                    # Record stage performance
+                    if recent_losses:
+                        self.curriculum_scheduler.stage_performance_history[stage].append(
+                            np.mean(list(recent_losses)[-10:])
+                        )
+                
+                self.logger.info(f"Stage {stage} completed")
             
-            self.logger.info(f"Stage {stage} completed")
-        
-        self.logger.info("Enhanced curriculum training completed!")
-        self.writer.close()
+            self.logger.info("Enhanced curriculum training completed!")
+            
+        finally:
+            # Always cleanup logging resources
+            self.cleanup_logging()
         
         # Save final curriculum state
         curriculum_state = {
@@ -672,7 +717,7 @@ class EnhancedCurriculumTrainer:
             import pickle
             pickle.dump(curriculum_state, f)
         
-        self.logger.info(f"Final curriculum state saved to {self.output_dir}")
+        print(f"Final curriculum state saved to {self.output_dir}")
     
     def load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint with curriculum state"""

@@ -231,34 +231,16 @@ def main():
     if args.debug:
         config = ProjectConfig(
             model=ModelConfig.tiny_125m(),
-            training=TrainingConfig(
-                batch_size=8,  # Small batch
-                max_epochs=3,
-                eval_every=5,
-                save_every=20,
-                log_every=1
-            ),
-            curriculum=CurriculumConfig(stages=[
-                CurriculumConfig.fast_debug().stages[0].__class__(
-                    name="debug_foundation",
-                    epochs=1,
-                    masking_rate_range=(0.75, 0.90),
-                    data_selection="easy",
-                    format_type="sentences"
-                ),
-                CurriculumConfig.fast_debug().stages[1].__class__(
-                    name="debug_structural", 
-                    epochs=1,
-                    masking_rate_range=(0.40, 0.60),
-                    data_selection="medium",
-                    format_type="pairs"
-                ),
-            ])
+            training=TrainingConfig.fast_debug(),
+            curriculum=CurriculumConfig.fast_debug()
         )
         print("🐛 Fast debug mode: 1 epoch per stage")
     else:
         config = ProjectConfig.from_yaml(args.config)
-    
+
+    # Validate configuration
+    config.validate()
+
     # Set seed
     set_seed(config.seed)
     
