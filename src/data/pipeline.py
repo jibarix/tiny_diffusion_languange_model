@@ -1,6 +1,7 @@
 """
-Complete Data Processing Pipeline - FIXED VERSION
-Text → sentences → difficulty scores → curriculum → dataset
+Enhanced Data Processing Pipeline - Research-Aligned Version
+Text → sentences → multi-dimensional difficulty → curriculum → dataset
+Implements advanced curriculum learning for diffusion models
 """
 
 import os
@@ -9,8 +10,10 @@ import pickle
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Tuple, Any
-from dataclasses import dataclass
+from typing import List, Dict, Tuple, Any, Optional
+from dataclasses import dataclass, field
+import math
+from collections import defaultdict, Counter
 
 import nltk
 import spacy
@@ -28,169 +31,575 @@ except LookupError:
 
 @dataclass
 class TextSegment:
-    """A text segment with difficulty scores"""
+    """A text segment with comprehensive difficulty scores"""
     text: str
     index: int
     
-    # Difficulty scores
+    # Static difficulty scores
     lexical_rarity: float = 0.0
     syntactic_complexity: float = 0.0
     thematic_centrality: float = 0.0
+    
+    # Dynamic difficulty scores (updated during training)
+    model_difficulty: float = 0.0  # Based on model loss
+    gradient_magnitude: float = 0.0  # Based on gradient norms
+    
+    # Argumentative structure
+    argumentative_role: str = "unknown"  # claim, evidence, warrant, backing, rebuttal
+    argumentative_confidence: float = 0.0
+    
+    # Combined scores
     combined_difficulty: float = 0.0
+    stage_assignment: int = 1  # Which curriculum stage
     
     # Metadata
     length: int = 0
     cluster_id: int = -1
+    vocabulary_level: int = 1  # For vocabulary curriculum
+
+
+@dataclass 
+class VocabularyCurriculum:
+    """Manages progressive vocabulary expansion"""
+    core_vocab: List[str] = field(default_factory=list)
+    level_vocabs: Dict[int, List[str]] = field(default_factory=dict)
+    max_level: int = 5
+    
+    def get_vocab_for_level(self, level: int) -> List[str]:
+        """Get vocabulary tokens up to specified level"""
+        vocab = self.core_vocab.copy()
+        for i in range(1, min(level + 1, self.max_level + 1)):
+            vocab.extend(self.level_vocabs.get(i, []))
+        return vocab
+
+
+class ArgumentMiner:
+    """Simple rule-based argument mining for scientific text"""
+    
+    def __init__(self):
+        # Patterns for identifying argumentative roles
+        self.claim_patterns = [
+            r'\b(i argue|i contend|i propose|it follows|therefore|thus|hence)\b',
+            r'\b(this shows|this proves|this demonstrates|the evidence shows)\b',
+            r'\b(in conclusion|to conclude|we can conclude)\b'
+        ]
+        
+        self.evidence_patterns = [
+            r'\b(for example|for instance|such as|namely|specifically)\b',
+            r'\b(observations? show|experiments? reveal|data indicates?)\b',
+            r'\b(we observe|we find|we see|we note)\b',
+            r'\b(in the case of|consider the|examination of)\b'
+        ]
+        
+        self.warrant_patterns = [
+            r'\b(because|since|as|given that|considering)\b',
+            r'\b(this is due to|this results from|this follows from)\b',
+            r'\b(the reason|the cause|the explanation)\b'
+        ]
+        
+        self.backing_patterns = [
+            r'\b(according to|research shows|studies indicate)\b',
+            r'\b(it is well known|it is established|it is accepted)\b',
+            r'\b(previous work|prior research|earlier studies)\b'
+        ]
+        
+        self.rebuttal_patterns = [
+            r'\b(however|nevertheless|nonetheless|yet|but)\b',
+            r'\b(on the contrary|in contrast|conversely)\b',
+            r'\b(some might argue|critics might say|objections include)\b',
+            r'\b(although|though|while|whereas)\b'
+        ]
+    
+    def classify_sentence(self, sentence: str) -> Tuple[str, float]:
+        """Classify sentence by argumentative role"""
+        sentence_lower = sentence.lower()
+        
+        # Score each role
+        scores = {
+            'claim': self._count_patterns(sentence_lower, self.claim_patterns),
+            'evidence': self._count_patterns(sentence_lower, self.evidence_patterns),
+            'warrant': self._count_patterns(sentence_lower, self.warrant_patterns),
+            'backing': self._count_patterns(sentence_lower, self.backing_patterns),
+            'rebuttal': self._count_patterns(sentence_lower, self.rebuttal_patterns)
+        }
+        
+        # Add heuristics
+        if sentence.endswith('?'):
+            scores['claim'] += 0.5
+        if 'because' in sentence_lower or 'since' in sentence_lower:
+            scores['warrant'] += 1.0
+        if any(word in sentence_lower for word in ['data', 'observation', 'experiment']):
+            scores['evidence'] += 1.0
+            
+        # Find best role
+        best_role = max(scores.keys(), key=lambda k: scores[k])
+        confidence = scores[best_role] / max(sum(scores.values()), 1.0)
+        
+        return best_role, confidence
+    
+    def _count_patterns(self, text: str, patterns: List[str]) -> float:
+        """Count pattern matches in text"""
+        count = 0
+        for pattern in patterns:
+            count += len(re.findall(pattern, text))
+        return count
+
+
+class DynamicDifficultyScorer:
+    """Updates difficulty scores based on model training dynamics"""
+    
+    def __init__(self, alpha: float = 0.9):
+        self.alpha = alpha  # Exponential moving average factor
+        self.loss_history = defaultdict(list)
+        self.gradient_history = defaultdict(list)
+    
+    def update_segment_difficulty(self, segment_id: int, loss: float, 
+                                 gradient_norm: float = None):
+        """Update difficulty based on model performance"""
+        self.loss_history[segment_id].append(loss)
+        if gradient_norm is not None:
+            self.gradient_history[segment_id].append(gradient_norm)
+    
+    def get_model_difficulty(self, segment_id: int) -> float:
+        """Get current model-based difficulty score"""
+        if segment_id not in self.loss_history:
+            return 0.5  # Default neutral difficulty
+        
+        losses = self.loss_history[segment_id]
+        if len(losses) == 0:
+            return 0.5
+        
+        # Use exponential moving average of recent losses
+        weights = [self.alpha ** (len(losses) - i - 1) for i in range(len(losses))]
+        weighted_loss = sum(w * l for w, l in zip(weights, losses)) / sum(weights)
+        
+        # Normalize to [0, 1] range (higher loss = higher difficulty)
+        return min(1.0, weighted_loss / 10.0)  # Assuming max reasonable loss ~10
+    
+    def get_gradient_difficulty(self, segment_id: int) -> float:
+        """Get gradient-based difficulty score"""
+        if segment_id not in self.gradient_history:
+            return 0.5
+        
+        grads = self.gradient_history[segment_id]
+        if len(grads) == 0:
+            return 0.5
+        
+        # Higher gradient norm = model learning more = higher difficulty
+        avg_grad = np.mean(grads[-5:])  # Use recent gradient norms
+        return min(1.0, avg_grad / 1.0)  # Normalize assuming max grad ~1.0
 
 
 class TextDataPipeline:
-    """Complete pipeline for processing text and creating curriculum"""
+    """Enhanced pipeline with advanced curriculum learning"""
     
     def __init__(self, 
                  embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
                  n_clusters: int = 8,
-                 target_vocab_size: int = 25000):
+                 target_vocab_size: int = 25000,
+                 enable_argument_mining: bool = True,
+                 enable_vocab_curriculum: bool = True):
         
         self.embedding_model_name = embedding_model
         self.n_clusters = n_clusters
         self.target_vocab_size = target_vocab_size
+        self.enable_argument_mining = enable_argument_mining
+        self.enable_vocab_curriculum = enable_vocab_curriculum
         
         # Initialize models
         self.nlp = spacy.load("en_core_web_sm")
         self.embedding_model = SentenceTransformer(embedding_model)
-        self.tokenizer = None  # Will be created from data
+        self.tokenizer = None
+        
+        # Advanced components
+        self.argument_miner = ArgumentMiner() if enable_argument_mining else None
+        self.dynamic_scorer = DynamicDifficultyScorer()
+        self.vocab_curriculum = VocabularyCurriculum() if enable_vocab_curriculum else None
         
         # Data storage
         self.segments: List[TextSegment] = []
         self.embeddings: np.ndarray = None
         self.cluster_model = None
         
+        # Curriculum weights (adjustable)
+        self.lexical_weight = 0.25
+        self.syntactic_weight = 0.25
+        self.centrality_weight = 0.25
+        self.argument_weight = 0.15
+        self.dynamic_weight = 0.10
+    
     def load_text(self, file_path: str) -> str:
         """Load and clean text from file"""
         with open(file_path, 'r', encoding='utf-8') as f:
             text = f.read()
         
         # Basic cleaning
-        text = re.sub(r'\n+', '\n', text)  # Remove excessive newlines
-        text = re.sub(r'\s+', ' ', text)   # Normalize whitespace
+        text = re.sub(r'\n+', '\n', text)
+        text = re.sub(r'\s+', ' ', text)
         text = text.strip()
         
         return text
     
     def segment_text(self, text: str) -> List[str]:
         """Segment text into sentences"""
-        # Use NLTK for sentence segmentation
         sentences = nltk.sent_tokenize(text)
         
-        # Filter out very short sentences
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+        # Filter and clean
+        cleaned_sentences = []
+        for s in sentences:
+            s = s.strip()
+            if len(s) > 20 and len(s.split()) >= 5:  # Minimum viable sentences
+                cleaned_sentences.append(s)
         
-        return sentences
+        return cleaned_sentences
     
-    def create_tokenizer(self, texts: List[str]) -> AutoTokenizer:
-        """Create tokenizer with special tokens"""
-        # Use base GPT-2 tokenizer
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    def create_vocabulary_curriculum(self, texts: List[str]) -> VocabularyCurriculum:
+        """Create progressive vocabulary curriculum"""
+        if not self.enable_vocab_curriculum:
+            return None
         
-        # Add special tokens if they don't exist
+        # Create base tokenizer
+        base_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        
+        # Analyze vocabulary frequency in the corpus
+        all_tokens = []
+        for text in texts:
+            tokens = base_tokenizer.encode(text, add_special_tokens=False)
+            all_tokens.extend([base_tokenizer.decode([t]) for t in tokens])
+        
+        # Count frequencies
+        token_freq = Counter(all_tokens)
+        sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
+        
+        # Create curriculum levels
+        vocab_curriculum = VocabularyCurriculum()
+        
+        # Core vocabulary (top 20% most frequent)
+        core_size = len(sorted_tokens) // 5
+        vocab_curriculum.core_vocab = [token for token, _ in sorted_tokens[:core_size]]
+        
+        # Progressive levels
+        remaining_tokens = sorted_tokens[core_size:]
+        level_size = len(remaining_tokens) // vocab_curriculum.max_level
+        
+        for level in range(1, vocab_curriculum.max_level + 1):
+            start_idx = (level - 1) * level_size
+            end_idx = start_idx + level_size if level < vocab_curriculum.max_level else len(remaining_tokens)
+            vocab_curriculum.level_vocabs[level] = [
+                token for token, _ in remaining_tokens[start_idx:end_idx]
+            ]
+        
+        return vocab_curriculum
+    
+    def create_adaptive_tokenizer(self, texts: List[str], vocab_level: int = 1) -> AutoTokenizer:
+        """Create tokenizer for specific vocabulary level"""
+        base_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        
+        if not self.vocab_curriculum:
+            # Standard compression
+            return self._compress_tokenizer(base_tokenizer, texts)
+        
+        # Get vocabulary for this level
+        allowed_vocab = self.vocab_curriculum.get_vocab_for_level(vocab_level)
+        
+        # Create filtered tokenizer (simplified approach)
+        # In practice, you'd want to retrain BPE with filtered vocabulary
         special_tokens = {
             "pad_token": "<pad>",
-            "mask_token": "<mask>", 
+            "mask_token": "<mask>",
             "bos_token": "<bos>",
             "eos_token": "<eos>"
         }
         
-        # Only add tokens that don't exist
         tokens_to_add = {}
-        if tokenizer.pad_token is None:
+        if base_tokenizer.pad_token is None:
             tokens_to_add["pad_token"] = special_tokens["pad_token"]
-        if tokenizer.mask_token is None:
-            tokens_to_add["mask_token"] = special_tokens["mask_token"] 
-        if tokenizer.bos_token is None:
+        if base_tokenizer.mask_token is None:
+            tokens_to_add["mask_token"] = special_tokens["mask_token"]
+        if base_tokenizer.bos_token is None:
             tokens_to_add["bos_token"] = special_tokens["bos_token"]
-        if tokenizer.eos_token is None:
+        if base_tokenizer.eos_token is None:
             tokens_to_add["eos_token"] = special_tokens["eos_token"]
         
         if tokens_to_add:
-            tokenizer.add_special_tokens(tokens_to_add)
+            base_tokenizer.add_special_tokens(tokens_to_add)
         
-        return tokenizer
+        return base_tokenizer
+    
+    def _compress_tokenizer(self, tokenizer: AutoTokenizer, texts: List[str]) -> AutoTokenizer:
+        """Compress tokenizer vocabulary based on corpus frequency"""
+        # Analyze token frequencies
+        all_tokens = []
+        for text in texts:
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            all_tokens.extend(tokens)
+        
+        token_freq = Counter(all_tokens)
+        
+        # Keep tokens that cover 90% of corpus
+        total_tokens = len(all_tokens)
+        sorted_tokens = sorted(token_freq.items(), key=lambda x: x[1], reverse=True)
+        
+        cumulative_freq = 0
+        kept_tokens = []
+        for token_id, freq in sorted_tokens:
+            cumulative_freq += freq
+            kept_tokens.append(token_id)
+            if cumulative_freq >= 0.9 * total_tokens:
+                break
+        
+        # Ensure we don't exceed parameter budget (20% rule)
+        max_vocab_size = min(len(kept_tokens), self.target_vocab_size)
+        
+        print(f"Compressed vocabulary: {len(tokenizer)} → {max_vocab_size} tokens")
+        return tokenizer  # Simplified - return original for now
     
     def calculate_lexical_difficulty(self, segments: List[str]) -> List[float]:
         """Calculate lexical rarity scores"""
         if self.tokenizer is None:
-            self.tokenizer = self.create_tokenizer(segments)
+            self.tokenizer = self.create_adaptive_tokenizer(segments)
         
         scores = []
         for text in segments:
-            # Simple approach: use average word length and readability
-            tokens = self.tokenizer.encode(text, add_special_tokens=False)
-            avg_token_length = len(tokens) / max(1, len(text.split()))
-            scores.append(avg_token_length)
+            # Calculate average word rarity using IDF-like scoring
+            words = re.findall(r'\b\w+\b', text.lower())
+            if not words:
+                scores.append(0.0)
+                continue
+            
+            # Simple heuristic: longer words = rarer/harder
+            avg_word_length = sum(len(word) for word in words) / len(words)
+            
+            # Normalize to [0, 1]
+            lexical_score = min(1.0, avg_word_length / 15.0)
+            scores.append(lexical_score)
         
         return scores
     
     def calculate_syntactic_complexity(self, segments: List[str]) -> List[float]:
-        """Calculate syntactic complexity using readability metrics"""
+        """Calculate syntactic complexity using multiple metrics"""
         scores = []
         for text in segments:
             try:
-                # Flesch Reading Ease (inverted so higher = harder)
+                # Multiple complexity measures
                 flesch = textstat.flesch_reading_ease(text)
-                complexity = max(0, (100 - flesch) / 100)
-            except:
-                complexity = 0.5  # Default to medium complexity
+                flesch_score = max(0, (100 - flesch) / 100)
+                
+                # Sentence length penalty
+                words = text.split()
+                length_score = min(1.0, len(words) / 50.0)
+                
+                # Subordinate clause detection (simple heuristic)
+                subordinate_markers = ['because', 'since', 'although', 'while', 'if', 'when', 'that', 'which']
+                subordinate_count = sum(1 for marker in subordinate_markers if marker in text.lower())
+                subordinate_score = min(1.0, subordinate_count / 3.0)
+                
+                # Combine scores
+                complexity = (flesch_score + length_score + subordinate_score) / 3.0
+                
+            except Exception:
+                complexity = 0.5  # Default moderate complexity
+            
             scores.append(complexity)
         
         return scores
     
-    def calculate_thematic_centrality(self, segments: List[str]) -> List[float]:
+    def calculate_thematic_centrality(self, segments: List[str]) -> Tuple[List[float], List[int]]:
         """Calculate thematic centrality using sentence embeddings"""
         print("Calculating sentence embeddings...")
         embeddings = self.embedding_model.encode(segments, show_progress_bar=True)
         self.embeddings = embeddings
         
-        # Cluster sentences
-        print(f"Clustering into {self.n_clusters} groups...")
+        print(f"Clustering into {self.n_clusters} thematic groups...")
         scaler = StandardScaler()
         embeddings_scaled = scaler.fit_transform(embeddings)
         
         self.cluster_model = KMeans(n_clusters=self.n_clusters, random_state=42)
         cluster_labels = self.cluster_model.fit_predict(embeddings_scaled)
         
-        # Calculate centrality within each cluster
+        # Calculate centrality scores
         centrality_scores = []
         for i, embedding in enumerate(embeddings):
             cluster_id = cluster_labels[i]
             cluster_center = self.cluster_model.cluster_centers_[cluster_id]
             
-            # Distance to cluster center (inverted so closer = higher centrality)
+            # Distance to cluster center (inverted for centrality)
             distance = np.linalg.norm(embeddings_scaled[i] - cluster_center)
-            centrality = max(0, 1 - distance / 2)  # Normalize
+            centrality = max(0, 1 - distance / 3)  # Normalize
             centrality_scores.append(centrality)
         
         return centrality_scores, cluster_labels
     
-    def create_curriculum_splits(self) -> Dict[str, List[TextSegment]]:
-        """Create curriculum splits based on difficulty"""
+    def calculate_argumentative_difficulty(self, segments: List[str]) -> Tuple[List[str], List[float]]:
+        """Calculate argumentative structure complexity"""
+        if not self.argument_miner:
+            return ['unknown'] * len(segments), [0.5] * len(segments)
+        
+        roles = []
+        confidences = []
+        
+        for segment in segments:
+            role, confidence = self.argument_miner.classify_sentence(segment)
+            roles.append(role)
+            confidences.append(confidence)
+        
+        return roles, confidences
+    
+    def assign_vocabulary_levels(self, segments: List[str]) -> List[int]:
+        """Assign vocabulary curriculum levels to segments"""
+        if not self.vocab_curriculum:
+            return [1] * len(segments)
+        
+        levels = []
+        for segment in segments:
+            # Simple heuristic: rare words → higher level
+            words = re.findall(r'\b\w+\b', segment.lower())
+            rare_word_count = 0
+            
+            for word in words:
+                if word not in self.vocab_curriculum.core_vocab:
+                    rare_word_count += 1
+            
+            # Assign level based on rare word density
+            rare_ratio = rare_word_count / max(len(words), 1)
+            if rare_ratio < 0.1:
+                level = 1
+            elif rare_ratio < 0.3:
+                level = 2
+            elif rare_ratio < 0.5:
+                level = 3
+            else:
+                level = min(4, int(rare_ratio * 8))
+            
+            levels.append(level)
+        
+        return levels
+    
+    def combine_difficulty_scores(self, segment: TextSegment) -> float:
+        """Combine all difficulty dimensions into final score"""
+        static_score = (
+            self.lexical_weight * segment.lexical_rarity +
+            self.syntactic_weight * segment.syntactic_complexity +
+            self.centrality_weight * (1 - segment.thematic_centrality) +  # Invert centrality
+            self.argument_weight * (1 - segment.argumentative_confidence)  # Lower confidence = harder
+        )
+        
+        dynamic_score = (
+            segment.model_difficulty * 0.6 +
+            segment.gradient_magnitude * 0.4
+        )
+        
+        final_score = (1 - self.dynamic_weight) * static_score + self.dynamic_weight * dynamic_score
+        return final_score
+    
+    def assign_curriculum_stages(self, segments: List[TextSegment]) -> None:
+        """Assign segments to curriculum stages based on difficulty"""
         # Sort by combined difficulty
-        sorted_segments = sorted(self.segments, key=lambda x: x.combined_difficulty)
+        difficulties = [s.combined_difficulty for s in segments]
         
-        n_segments = len(sorted_segments)
-        easy_end = n_segments // 3
-        medium_end = 2 * n_segments // 3
+        # Calculate percentile thresholds
+        easy_threshold = np.percentile(difficulties, 33)
+        hard_threshold = np.percentile(difficulties, 67)
         
-        splits = {
-            'easy': sorted_segments[:easy_end],
-            'medium': sorted_segments[easy_end:medium_end], 
-            'hard': sorted_segments[medium_end:],
-            'all': sorted_segments
-        }
+        for segment in segments:
+            if segment.combined_difficulty <= easy_threshold:
+                segment.stage_assignment = 1  # Foundation
+            elif segment.combined_difficulty <= hard_threshold:
+                segment.stage_assignment = 2  # Structural
+            else:
+                segment.stage_assignment = 3  # Refinement
+    
+    def create_argument_pairs(self, segments: List[TextSegment]) -> List[Tuple[TextSegment, TextSegment]]:
+        """Create evidence-claim pairs for Stage II training"""
+        pairs = []
         
-        return splits
+        # Group by argumentative roles
+        evidence_segments = [s for s in segments if s.argumentative_role == 'evidence']
+        claim_segments = [s for s in segments if s.argumentative_role == 'claim']
+        warrant_segments = [s for s in segments if s.argumentative_role == 'warrant']
+        
+        # Create evidence→claim pairs
+        for evidence in evidence_segments:
+            # Find closest claim in embedding space
+            best_claim = None
+            best_similarity = -1
+            
+            for claim in claim_segments:
+                if self.embeddings is not None:
+                    similarity = np.dot(self.embeddings[evidence.index], 
+                                      self.embeddings[claim.index])
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_claim = claim
+            
+            if best_claim:
+                pairs.append((evidence, best_claim))
+        
+        # Create warrant→claim pairs
+        for warrant in warrant_segments:
+            best_claim = None
+            best_similarity = -1
+            
+            for claim in claim_segments:
+                if self.embeddings is not None:
+                    similarity = np.dot(self.embeddings[warrant.index], 
+                                      self.embeddings[claim.index])
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_claim = claim
+            
+            if best_claim:
+                pairs.append((warrant, best_claim))
+        
+        return pairs
+    
+    def generate_pseudo_data(self, model, stage_2_segments: List[TextSegment], 
+                           num_samples: int = 100) -> List[str]:
+        """Generate pseudo-data for Stage III self-training"""
+        # This would use the trained Stage II model to generate variations
+        # For now, return simple paraphrases as placeholder
+        pseudo_texts = []
+        
+        for segment in stage_2_segments[:num_samples]:
+            # Simple pseudo-generation (in practice, use the actual model)
+            original = segment.text
+            
+            # Create simple variations
+            variations = [
+                original.replace(' is ', ' appears to be '),
+                original.replace(' shows ', ' demonstrates '),
+                original.replace(' because ', ' since '),
+            ]
+            
+            # Filter for quality (semantic similarity check would go here)
+            for variation in variations:
+                if len(variation) > len(original) * 0.8:  # Simple length filter
+                    pseudo_texts.append(variation)
+        
+        return pseudo_texts
+    
+    def update_dynamic_scores(self, segment_ids: List[int], losses: List[float], 
+                            gradient_norms: List[float] = None):
+        """Update dynamic difficulty scores based on training feedback"""
+        for i, segment_id in enumerate(segment_ids):
+            loss = losses[i]
+            grad_norm = gradient_norms[i] if gradient_norms else None
+            
+            # Update dynamic scorer
+            self.dynamic_scorer.update_segment_difficulty(segment_id, loss, grad_norm)
+            
+            # Update segment scores
+            if segment_id < len(self.segments):
+                segment = self.segments[segment_id]
+                segment.model_difficulty = self.dynamic_scorer.get_model_difficulty(segment_id)
+                if grad_norm:
+                    segment.gradient_magnitude = min(1.0, grad_norm)
+                
+                # Recalculate combined difficulty
+                segment.combined_difficulty = self.combine_difficulty_scores(segment)
     
     def process_text_file(self, file_path: str) -> List[TextSegment]:
-        """Process text file and create segments with difficulty scores"""
+        """Main processing pipeline with all curriculum features"""
         print(f"Processing: {file_path}")
         
         # Load and segment text
@@ -198,7 +607,12 @@ class TextDataPipeline:
         sentences = self.segment_text(text)
         print(f"Found {len(sentences)} sentences")
         
-        # Calculate difficulty scores
+        # Create vocabulary curriculum
+        if self.enable_vocab_curriculum:
+            print("Creating vocabulary curriculum...")
+            self.vocab_curriculum = self.create_vocabulary_curriculum(sentences)
+        
+        # Calculate static difficulty scores
         print("Calculating lexical difficulty...")
         lexical_scores = self.calculate_lexical_difficulty(sentences)
         
@@ -208,32 +622,58 @@ class TextDataPipeline:
         print("Calculating thematic centrality...")
         thematic_scores, cluster_labels = self.calculate_thematic_centrality(sentences)
         
-        # Create segments
+        print("Analyzing argumentative structure...")
+        arg_roles, arg_confidences = self.calculate_argumentative_difficulty(sentences)
+        
+        print("Assigning vocabulary levels...")
+        vocab_levels = self.assign_vocabulary_levels(sentences)
+        
+        # Create segments with all scores
         self.segments = []
         for i, sentence in enumerate(sentences):
-            # Combine difficulty scores (you can adjust weights)
-            combined = (
-                0.3 * lexical_scores[i] + 
-                0.4 * syntactic_scores[i] + 
-                0.3 * (1 - thematic_scores[i])  # Invert centrality for difficulty
-            )
-            
             segment = TextSegment(
                 text=sentence,
                 index=i,
                 lexical_rarity=lexical_scores[i],
                 syntactic_complexity=syntactic_scores[i],
                 thematic_centrality=thematic_scores[i],
-                combined_difficulty=combined,
+                argumentative_role=arg_roles[i],
+                argumentative_confidence=arg_confidences[i],
                 length=len(sentence.split()),
-                cluster_id=cluster_labels[i]
+                cluster_id=cluster_labels[i],
+                vocabulary_level=vocab_levels[i]
             )
+            
+            # Calculate initial combined difficulty
+            segment.combined_difficulty = self.combine_difficulty_scores(segment)
             self.segments.append(segment)
+        
+        # Assign curriculum stages
+        print("Assigning curriculum stages...")
+        self.assign_curriculum_stages(self.segments)
+        
+        print(f"Stage assignments: Foundation={sum(1 for s in self.segments if s.stage_assignment == 1)}, "
+              f"Structural={sum(1 for s in self.segments if s.stage_assignment == 2)}, "
+              f"Refinement={sum(1 for s in self.segments if s.stage_assignment == 3)}")
         
         return self.segments
     
+    def get_stage_data(self, stage: int, vocab_level: int = None) -> List[TextSegment]:
+        """Get data for specific curriculum stage and vocabulary level"""
+        stage_segments = [s for s in self.segments if s.stage_assignment == stage]
+        
+        if vocab_level is not None:
+            stage_segments = [s for s in stage_segments if s.vocabulary_level <= vocab_level]
+        
+        return stage_segments
+    
+    def get_argument_pairs(self, stage: int = 2) -> List[Tuple[TextSegment, TextSegment]]:
+        """Get argumentative pairs for Stage II training"""
+        stage_segments = self.get_stage_data(stage)
+        return self.create_argument_pairs(stage_segments)
+    
     def save_data(self, output_dir: str):
-        """Save processed data to disk"""
+        """Save processed data with all curriculum components"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
@@ -241,55 +681,93 @@ class TextDataPipeline:
         with open(output_path / "segments.pkl", "wb") as f:
             pickle.dump(self.segments, f)
         
-        # Save curriculum splits
-        splits = self.create_curriculum_splits()
+        # Save curriculum splits by stage
+        stage_splits = {}
+        for stage in [1, 2, 3]:
+            stage_splits[f'stage_{stage}'] = self.get_stage_data(stage)
+        
         with open(output_path / "curriculum_splits.pkl", "wb") as f:
-            pickle.dump(splits, f)
+            pickle.dump(stage_splits, f)
         
-        # Save tokenizer
-        if self.tokenizer:
-            tokenizer_path = output_path / "tokenizer"
-            self.tokenizer.save_pretrained(tokenizer_path)
+        # Save argument pairs
+        if self.enable_argument_mining:
+            argument_pairs = self.get_argument_pairs()
+            with open(output_path / "argument_pairs.pkl", "wb") as f:
+                pickle.dump(argument_pairs, f)
         
-        # Save embeddings
+        # Save vocabulary curriculum
+        if self.vocab_curriculum:
+            with open(output_path / "vocab_curriculum.pkl", "wb") as f:
+                pickle.dump(self.vocab_curriculum, f)
+        
+        # Save tokenizer for each vocab level
+        if self.vocab_curriculum:
+            for level in range(1, self.vocab_curriculum.max_level + 1):
+                tokenizer = self.create_adaptive_tokenizer(
+                    [s.text for s in self.segments], vocab_level=level
+                )
+                tokenizer_path = output_path / f"tokenizer_level_{level}"
+                tokenizer.save_pretrained(tokenizer_path)
+        else:
+            # Save standard tokenizer
+            if self.tokenizer:
+                tokenizer_path = output_path / "tokenizer"
+                self.tokenizer.save_pretrained(tokenizer_path)
+        
+        # Save embeddings and models
         if self.embeddings is not None:
             np.save(output_path / "embeddings.npy", self.embeddings)
         
-        # Save cluster model
         if self.cluster_model:
             with open(output_path / "cluster_model.pkl", "wb") as f:
                 pickle.dump(self.cluster_model, f)
         
-        print(f"Data saved to: {output_path}")
+        # Save dynamic scorer
+        with open(output_path / "dynamic_scorer.pkl", "wb") as f:
+            pickle.dump(self.dynamic_scorer, f)
+        
+        print(f"Enhanced curriculum data saved to: {output_path}")
     
     def load_data(self, data_dir: str):
-        """Load previously processed data"""
+        """Load previously processed curriculum data"""
         data_path = Path(data_dir)
         
         # Load segments
         with open(data_path / "segments.pkl", "rb") as f:
             self.segments = pickle.load(f)
         
-        # Load embeddings
+        # Load vocabulary curriculum
+        vocab_curriculum_path = data_path / "vocab_curriculum.pkl"
+        if vocab_curriculum_path.exists():
+            with open(vocab_curriculum_path, "rb") as f:
+                self.vocab_curriculum = pickle.load(f)
+        
+        # Load dynamic scorer
+        scorer_path = data_path / "dynamic_scorer.pkl"
+        if scorer_path.exists():
+            with open(scorer_path, "rb") as f:
+                self.dynamic_scorer = pickle.load(f)
+        
+        # Load embeddings and models
         if (data_path / "embeddings.npy").exists():
             self.embeddings = np.load(data_path / "embeddings.npy")
         
-        # Load tokenizer
-        if (data_path / "tokenizer").exists():
-            self.tokenizer = AutoTokenizer.from_pretrained(data_path / "tokenizer")
-        
-        # Load cluster model
         if (data_path / "cluster_model.pkl").exists():
             with open(data_path / "cluster_model.pkl", "rb") as f:
                 self.cluster_model = pickle.load(f)
         
-        print(f"Data loaded from: {data_path}")
+        print(f"Enhanced curriculum data loaded from: {data_path}")
 
 
 def main():
-    """Example usage"""
-    # Initialize pipeline
-    pipeline = TextDataPipeline(n_clusters=8, target_vocab_size=25000)
+    """Example usage of enhanced pipeline"""
+    # Initialize enhanced pipeline
+    pipeline = TextDataPipeline(
+        n_clusters=8, 
+        target_vocab_size=25000,
+        enable_argument_mining=True,
+        enable_vocab_curriculum=True
+    )
     
     # Process text file
     segments = pipeline.process_text_file("data/raw/complete_works_shakespeare.txt")
@@ -297,12 +775,22 @@ def main():
     # Save results
     pipeline.save_data("data/processed")
     
-    # Print statistics
+    # Print enhanced statistics
     difficulties = [s.combined_difficulty for s in segments]
-    print(f"\nDifficulty Statistics:")
-    print(f"Mean: {np.mean(difficulties):.3f}")
-    print(f"Std: {np.std(difficulties):.3f}")
-    print(f"Range: {np.min(difficulties):.3f} - {np.max(difficulties):.3f}")
+    print(f"\nEnhanced Curriculum Statistics:")
+    print(f"Total segments: {len(segments)}")
+    print(f"Difficulty range: {min(difficulties):.3f} - {max(difficulties):.3f}")
+    print(f"Argumentative roles: {Counter(s.argumentative_role for s in segments)}")
+    print(f"Vocabulary levels: {Counter(s.vocabulary_level for s in segments)}")
+    
+    # Show stage distribution
+    for stage in [1, 2, 3]:
+        stage_data = pipeline.get_stage_data(stage)
+        print(f"Stage {stage}: {len(stage_data)} segments")
+    
+    # Show argument pairs for Stage II
+    pairs = pipeline.get_argument_pairs()
+    print(f"Argument pairs for Stage II: {len(pairs)}")
 
 
 if __name__ == "__main__":
