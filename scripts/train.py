@@ -232,47 +232,99 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
     """
     logger.info("Running evaluation...")
     
-    # Load the trained model
-    generator = TextGenerator.from_checkpoint(model_path, config)
-    
-    # Generate sample texts
-    prompts = [
-        "The origin of",
-        "Natural selection",
-        "In the struggle for existence",
-        "The evidence for evolution"
-    ]
-    
-    logger.info("Generating sample texts...")
-    for prompt in prompts:
-        generated = generator.generate(
-            prompt=prompt,
-            max_length=100,
-            temperature=0.8,
-            do_sample=True
-        )
-        logger.info(f"Prompt: '{prompt}'")
-        logger.info(f"Generated: {generated}")
-        logger.info("-" * 50)
-    
-    # Style analysis (if evaluation data available)
     try:
-        analyzer = StyleAnalyzer()
+        # Load the trained model and tokenizer
+        from src.model import load_model_checkpoint
         
-        # Generate evaluation text
-        eval_texts = []
+        # Determine device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Load model from checkpoint
+        model, checkpoint = load_model_checkpoint(model_path, str(device))
+        
+        # Get tokenizer from data pipeline
+        tokenizer = data_pipeline.tokenizer
+        
+        # Create generator
+        from src.evaluation import TextGenerator
+        generator = TextGenerator(model, tokenizer, device)
+        
+        # Generate sample texts
+        prompts = [
+            "The origin of",
+            "Natural selection",
+            "In the struggle for existence",
+            "The evidence for evolution"
+        ]
+        
+        logger.info("Generating sample texts...")
         for prompt in prompts:
-            text = generator.generate(prompt=prompt, max_length=200, temperature=0.7)
-            eval_texts.append(text)
+            try:
+                from src.evaluation import GenerationConfig
+                
+                result = generator.generate(
+                    prompt=prompt,
+                    config=GenerationConfig(
+                        max_new_tokens=100,
+                        temperature=0.8,
+                        do_sample=True
+                    )
+                )
+                
+                logger.info(f"Prompt: '{prompt}'")
+                logger.info(f"Generated: {result.generated_text}")
+                logger.info("-" * 50)
+                
+            except Exception as e:
+                logger.warning(f"Generation failed for prompt '{prompt}': {e}")
         
-        # Analyze style metrics
-        metrics = analyzer.analyze_style_metrics(eval_texts)
-        logger.info("Style Analysis Results:")
-        for metric, value in metrics.items():
-            logger.info(f"  {metric}: {value:.3f}")
+        # Style analysis (if evaluation data available)
+        try:
+            from src.evaluation import StyleAnalyzer
+            analyzer = StyleAnalyzer()
             
+            # Generate evaluation text
+            eval_texts = []
+            for prompt in prompts:
+                try:
+                    result = generator.generate(
+                        prompt=prompt,
+                        config=GenerationConfig(
+                            max_new_tokens=200,
+                            temperature=0.7,
+                            do_sample=True
+                        )
+                    )
+                    eval_texts.append(result.generated_text)
+                except Exception as e:
+                    logger.warning(f"Failed to generate text for analysis: {e}")
+            
+            if eval_texts:
+                # Analyze style metrics for each text
+                style_results = []
+                for text in eval_texts:
+                    if text and text.strip():
+                        style_metrics = analyzer.analyze_text(text)
+                        style_results.append(style_metrics)
+                
+                if style_results:
+                    # Calculate average metrics
+                    avg_sentence_length = sum(s.avg_sentence_length for s in style_results) / len(style_results)
+                    avg_vocab_richness = sum(s.vocab_richness_ttr for s in style_results) / len(style_results)
+                    avg_readability = sum(s.flesch_kincaid_grade for s in style_results) / len(style_results)
+                    
+                    logger.info("Style Analysis Results:")
+                    logger.info(f"  Average sentence length: {avg_sentence_length:.2f}")
+                    logger.info(f"  Average vocabulary richness: {avg_vocab_richness:.3f}")
+                    logger.info(f"  Average readability grade: {avg_readability:.2f}")
+                    
+        except Exception as e:
+            logger.warning(f"Style analysis failed: {e}")
+    
     except Exception as e:
-        logger.warning(f"Style analysis failed: {e}")
+        logger.error(f"Evaluation failed: {e}")
+        import traceback
+        traceback.print_exc()
     
     logger.info("Evaluation complete!")
 

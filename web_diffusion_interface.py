@@ -184,44 +184,79 @@ def load_models():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         checkpoint = torch.load(checkpoint_path, map_location=device)
         
-        # Check if config exists and has required keys
-        if 'config' not in checkpoint or 'd_model' not in checkpoint.get('config', {}):
-            print("⚠️  Invalid config in checkpoint, creating default config...")
-            from src.model import MaskedDiffusionLM
+        # Extract model configuration from checkpoint
+        if 'config' in checkpoint and isinstance(checkpoint['config'], dict):
+            config = checkpoint['config']
+            if 'model' in config:
+                model_config = config['model']
+                # Ensure vocab_size matches tokenizer
+                model_config['vocab_size'] = len(tokenizer.compressed_vocab)
+                model_config['mask_token_id'] = tokenizer.token_mapping.get('[MASK]', 1)
+                model_config['pad_token_id'] = tokenizer.token_mapping.get('[PAD]', 0)
+                print(f"✅ Using model config from checkpoint")
+                print(f"  d_model: {model_config.get('d_model')}")
+                print(f"  n_layers: {model_config.get('n_layers')}")
+                print(f"  n_heads: {model_config.get('n_heads')}")
+            else:
+                raise ValueError("No model config found in checkpoint")
+        else:
+            print("⚠️  No valid config in checkpoint, attempting to infer from state_dict...")
             
-            # Default config matching your actual model
+            # Try to infer model config from state dict shapes
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            
+            # Infer dimensions from embedding layer
+            embed_shape = state_dict['embed_tokens.weight'].shape
+            vocab_size, d_model = embed_shape
+            
+            # Count layers by looking for layer keys
+            layer_keys = [k for k in state_dict.keys() if k.startswith('layers.')]
+            max_layer = max([int(k.split('.')[1]) for k in layer_keys]) + 1
+            
+            # Infer number of heads from attention projection shapes
+            q_proj_shape = state_dict['layers.0.self_attn.q_proj.weight'].shape
+            n_heads = 12 if d_model == 768 else 4  # Common configurations
+            
             model_config = {
-                'd_model': 128,
-                'n_layers': 3,
-                'n_heads': 4,
-                'head_dim': 32,
-                'ffn_hidden_size': 2048,
-                'vocab_size': len(tokenizer.compressed_vocab),
-                'max_position_embeddings': 512,
+                'd_model': d_model,
+                'n_layers': max_layer,
+                'n_heads': n_heads,
+                'head_dim': d_model // n_heads,
+                'ffn_hidden_size': 2048 if d_model >= 512 else d_model * 4,
+                'vocab_size': vocab_size,
+                'max_position_embeddings': 2048,
                 'attention_dropout': 0.0,
                 'hidden_dropout': 0.1,
                 'use_causal_mask': False,
                 'mask_token_id': tokenizer.token_mapping.get('[MASK]', 1),
                 'pad_token_id': tokenizer.token_mapping.get('[PAD]', 0),
+                'norm_eps': 1e-6,
+                'initializer_range': 0.02,
+                'gradient_checkpointing': False,
+                'use_cache': False,
             }
             
-            # Create model
-            model = MaskedDiffusionLM(model_config)
-            
-            # Load state dict
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                # Assume checkpoint is just the state dict
-                model.load_state_dict(checkpoint)
+            print(f"✅ Inferred model config:")
+            print(f"  d_model: {model_config['d_model']}")
+            print(f"  n_layers: {model_config['n_layers']}")
+            print(f"  n_heads: {model_config['n_heads']}")
+        
+        # Create model with correct config
+        from src.model import MaskedDiffusionLM
+        model = MaskedDiffusionLM(model_config)
+        
+        # Load state dict
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
         else:
-            # Use existing load function
-            model, _ = load_model_checkpoint(checkpoint_path, str(device))
+            # Assume checkpoint is just the state dict
+            model.load_state_dict(checkpoint)
         
         model.to(device)
         model.eval()
         
         print(f"✅ Model loaded successfully on {device}")
+        print(f"  Parameters: {model.get_num_params():,}")
         return True
         
     except Exception as e:
