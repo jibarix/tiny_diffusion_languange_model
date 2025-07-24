@@ -11,6 +11,7 @@ Usage:
     python scripts/generate.py --checkpoint best_model.pt --batch prompts.txt
 """
 
+import os
 import argparse
 import json
 import logging
@@ -41,22 +42,36 @@ def load_model_and_tokenizer(checkpoint_path: str, config_path: Optional[str] = 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
-    # Load configuration
-    if config_path:
+    # Load configuration - prioritize checkpoint config
+    if 'config' in checkpoint:
+        config = checkpoint['config']
+        logger.info("Using config from checkpoint")
+    elif config_path and os.path.exists(config_path):
         with open(config_path, 'r') as f:
             config = json.load(f)
-    elif 'config' in checkpoint:
-        config = checkpoint['config']
+        logger.info(f"Using config from: {config_path}")
     else:
-        logger.warning("No config found, using default")
-        config = ProjectConfig.default().to_dict()
+        raise ValueError("No valid config found. Checkpoint missing config or config_path invalid.")
     
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained('gpt2')
-    tokenizer.pad_token = tokenizer.eos_token
+    # Load tokenizer from data directory (matches training)
+    tokenizer_path = "data/processed/compressed_tokenizer.json"
+    if os.path.exists(tokenizer_path):
+        from src.data import CompressedTokenizer
+        tokenizer = CompressedTokenizer.load(tokenizer_path)
+        logger.info(f"Loaded compressed tokenizer: {len(tokenizer.compressed_vocab)} tokens")
+    else:
+        # Fallback to GPT-2 tokenizer
+        tokenizer = AutoTokenizer.from_pretrained('gpt2')
+        tokenizer.pad_token = tokenizer.eos_token
+        logger.warning("Using fallback GPT-2 tokenizer")
     
-    # Initialize model
-    model = MaskedDiffusionLM(config['model'])
+    # Update model config with actual tokenizer vocab size
+    model_config = config['model'].copy()
+    if hasattr(tokenizer, 'compressed_vocab'):
+        model_config['vocab_size'] = len(tokenizer.compressed_vocab)
+    
+    # Initialize model with corrected config
+    model = MaskedDiffusionLM(model_config)
     
     # Load state dict
     if 'model_state_dict' in checkpoint:
@@ -65,8 +80,9 @@ def load_model_and_tokenizer(checkpoint_path: str, config_path: Optional[str] = 
         model.load_state_dict(checkpoint)
     
     logger.info("Model loaded successfully")
+    logger.info(f"Model vocab size: {model.vocab_size}")
+    
     return model, tokenizer, config
-
 
 def single_generation(generator: TextGenerator, prompt: str, config: GenerationConfig) -> GenerationResult:
     """Generate single text from prompt"""
