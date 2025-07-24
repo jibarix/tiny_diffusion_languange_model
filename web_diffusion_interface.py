@@ -53,25 +53,18 @@ class WebDiffusionGenerator:
         # Initialize sequence with properly decoded prompt tokens
         prompt_token_ids = self.tokenizer.encode(prompt)
         
-        # Decode each token properly using the tokenizer's vocab
-        prompt_tokens = []
-        for token_id in prompt_token_ids:
-            vocab_items = list(self.tokenizer.compressed_vocab.items())
-            token_text = next((token for token, tid in vocab_items if tid == token_id), str(token_id))
-            
-            # Clean up the token
-            clean_token = token_text.replace('Ġ', ' ').strip()
-            prompt_tokens.append(clean_token if clean_token else token_text)
-        
+        # Create input sequence: prompt + masked tokens
         input_ids = prompt_token_ids + [self.mask_token_id] * max_new_tokens
-        revealed_tokens = prompt_tokens + [-1] * max_new_tokens
-        token_states = ['prompt'] * len(prompt_tokens) + ['masked'] * max_new_tokens
+        
+        # Only track the NEW tokens for display (not the prompt)
+        display_tokens = [-1] * max_new_tokens  # Only new tokens
+        token_states = ['masked'] * max_new_tokens  # Only new tokens
         
         # Send initial state
         yield {
             'type': 'init',
-            'prompt_tokens': prompt_tokens,
-            'total_tokens': len(input_ids),
+            'prompt': prompt,
+            'total_tokens': max_new_tokens,  # Only count new tokens
             'steps': num_diffusion_steps
         }
         
@@ -89,7 +82,7 @@ class WebDiffusionGenerator:
                 'masking_rate': masking_rate
             }
             
-            # Find masked positions
+            # Find masked positions (only in the new token range)
             masked_positions = [i for i, state in enumerate(token_states) if state == 'masked']
             
             if masked_positions:
@@ -108,8 +101,9 @@ class WebDiffusionGenerator:
                                                    min(tokens_to_reveal, len(masked_positions)))
                 
                 for pos in positions_to_reveal:
-                    # Get logits for this position
-                    pos_logits = logits[pos]
+                    # Get logits for this position (offset by prompt length)
+                    actual_pos = pos + len(prompt_token_ids)
+                    pos_logits = logits[actual_pos]
                     
                     # Apply temperature
                     pos_logits = pos_logits / temperature
@@ -134,8 +128,8 @@ class WebDiffusionGenerator:
                         display_token = predicted_token
                     
                     # Update sequence
-                    input_ids[pos] = predicted_token_id
-                    revealed_tokens[pos] = display_token
+                    input_ids[actual_pos] = predicted_token_id
+                    display_tokens[pos] = display_token
                     token_states[pos] = 'revealing'
                     
                     # Send token reveal event
@@ -155,8 +149,8 @@ class WebDiffusionGenerator:
                         'state': 'revealed'
                     }
         
-        # Generate final text
-        final_tokens = [str(t) for t in revealed_tokens if t != -1]
+        # Generate final text (only from new tokens)
+        final_tokens = [str(t) for t in display_tokens if t != -1]
         final_text = ' '.join(final_tokens).replace('Ġ', ' ').strip()
         
         yield {
@@ -372,6 +366,15 @@ HTML_TEMPLATE = '''
             border-radius: 10px;
             border: 1px solid rgba(255,255,255,0.1);
         }
+        .prompt-display {
+            background: rgba(69, 183, 209, 0.1);
+            border: 1px solid rgba(69, 183, 209, 0.3);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #45b7d1;
+        }
         .prompt-input {
             width: 100%;
             padding: 15px;
@@ -490,10 +493,6 @@ HTML_TEMPLATE = '''
             transition: all 0.5s ease;
             margin-right: 4px;
         }
-        .token.prompt { 
-            color: #45b7d1; 
-            font-weight: bold; 
-        }
         .token.masked {
             background: rgba(255, 107, 107, 0.3);
             color: #ff6b6b;
@@ -581,6 +580,9 @@ HTML_TEMPLATE = '''
 
         <div class="controls">
             <div class="input-panel">
+                <div class="prompt-display" id="promptDisplay" style="display: none;">
+                    Prompt: <span id="currentPrompt"></span>
+                </div>
                 <input type="text" class="prompt-input" id="promptInput" 
                        placeholder="Enter your prompt..." value="The creature">
                 <button class="generate-btn" id="generateBtn">🚀 Generate with Diffusion</button>
@@ -658,6 +660,8 @@ HTML_TEMPLATE = '''
             
             initializeElements() {
                 this.promptInput = document.getElementById('promptInput');
+                this.promptDisplay = document.getElementById('promptDisplay');
+                this.currentPrompt = document.getElementById('currentPrompt');
                 this.generateBtn = document.getElementById('generateBtn');
                 this.progressInfo = document.getElementById('progressInfo');
                 this.progressBar = document.getElementById('progressBar');
@@ -700,6 +704,10 @@ HTML_TEMPLATE = '''
                 this.generateBtn.disabled = true;
                 this.generateBtn.textContent = '⏳ Generating...';
                 
+                // Show prompt display
+                this.currentPrompt.textContent = prompt;
+                this.promptDisplay.style.display = 'block';
+                
                 // Show progress elements
                 this.progressInfo.style.display = 'flex';
                 this.progressBar.style.display = 'block';
@@ -736,15 +744,9 @@ HTML_TEMPLATE = '''
             }
             
             handleInit(event) {
-                // Initialize tokens array
-                this.currentTokens = [...event.prompt_tokens];
-                this.tokenStates = new Array(event.prompt_tokens.length).fill('prompt');
-                
-                // Add masked tokens
-                for (let i = 0; i < event.total_tokens - event.prompt_tokens.length; i++) {
-                    this.currentTokens.push(this.maskToken);
-                    this.tokenStates.push('masked');
-                }
+                // Initialize tokens array (only for new tokens, not prompt)
+                this.currentTokens = new Array(event.total_tokens).fill(this.maskToken);
+                this.tokenStates = new Array(event.total_tokens).fill('masked');
                 
                 // Create step indicators
                 this.createStepIndicators(event.steps);
@@ -902,6 +904,7 @@ def run_app():
     print("  • Step-by-step progress tracking")
     print("  • Visual masking/revealing process")
     print("  • Interactive parameter controls")
+    print("  • Prompt-only display (no duplication in output)")
     print("\n🎯 Press Ctrl+C to stop the server")
     
     try:
