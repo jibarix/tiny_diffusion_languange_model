@@ -367,9 +367,9 @@ Examples:
     
     # Generation parameters
     parser.add_argument('--max-tokens', type=int, default=100, help='Maximum new tokens')
-    parser.add_argument('--temperature', type=float, default=0.8, help='Sampling temperature')
-    parser.add_argument('--top-p', type=float, default=0.9, help='Nucleus sampling threshold')
-    parser.add_argument('--top-k', type=int, default=50, help='Top-k sampling')
+    parser.add_argument('--temperature', type=float, default=0.6, help='Sampling temperature')
+    parser.add_argument('--top-p', type=float, default=0.85, help='Nucleus sampling threshold')
+    parser.add_argument('--top-k', type=int, default=20, help='Top-k sampling')
     parser.add_argument('--steps', type=int, default=20, help='Number of diffusion steps')
     parser.add_argument('--seed', type=int, help='Random seed for reproducibility')
     

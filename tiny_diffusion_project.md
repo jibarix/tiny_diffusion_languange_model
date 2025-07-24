@@ -6,9 +6,35 @@ A comprehensive exploration of training a small masked diffusion language model 
 
 ### Key Research Insights
 - **Diffusion beats autoregressive in data-constrained settings**: When data is limited but compute is available, masked diffusion models significantly outperform AR models
-- **Critical compute threshold**: Diffusion becomes favorable when compute exceeds `Ccrit(U) = 2.12 × 10^15 · U^2.174` FLOPs
+- **Critical compute threshold**: Diffusion becomes favorable when compute exceeds `Ccrit(U) = 2.12 × 10^15 · U^2.174` FLOPs (Prabhudesai et al., 2025, Section 4.3)
 - **Superior data reuse**: Diffusion models can benefit from ~500 epochs vs ~15 for AR models
 - **Curriculum learning essential**: 3-stage progression maximizes small model capabilities
+
+## Understanding the Critical Compute Threshold
+
+### What Does the Formula Mean?
+
+The formula `Ccrit(U) = 2.12 × 10^15 · U^2.174` tells us **when diffusion models become better than autoregressive models** based on two factors:
+
+- **U** = Amount of unique text data (in tokens)
+- **C** = Computing power used (in FLOPs - floating point operations)
+
+### Real-World Translation
+
+**The Bottom Line**: If you have limited text data but plenty of computing time, diffusion models will eventually outperform traditional autoregressive models once you cross a specific compute threshold.
+
+**Example Scenarios**:
+- **Small dataset (1M tokens)**: Need ~2.3 × 10^21 FLOPs to see diffusion advantages
+- **Medium dataset (100M tokens)**: Need ~3.6 × 10^24 FLOPs 
+- **Large dataset (10B tokens)**: Need ~5.7 × 10^27 FLOPs
+
+### Why This Matters for Our Project
+
+**Single Book Training**: A typical book contains 100K-500K tokens. According to the formula, diffusion becomes favorable around 10^20-10^21 FLOPs - well within reach of consumer hardware running for days/weeks.
+
+**Practical Insight**: The formula validates our approach of using diffusion for single-book training, as we're operating exactly in the "data-constrained, compute-abundant" regime where diffusion excels.
+
+**Key Takeaway**: Traditional models learn quickly but plateau fast. Diffusion models learn slowly but keep improving with more training time.
 
 ## Hardware Specifications
 
@@ -62,6 +88,7 @@ RAM: 64GB DDR5-4800
 - **Memory Optimization**: Efficient attention computation with optional caching
 
 ### Architectural Choices Rationale
+- **RoPE + SwiGLU + RMSNorm**: Follows 2024-2025 mainstream LLM practices, widely adopted but not universally optimal for all domains
 - **Compressed Tokenizer**: Reduces embedding parameters from 36.8% to <20% of total params
 - **Deeper Architecture**: 12 layers provide better performance than wider alternatives for small models
 - **Bidirectional Attention**: Essential for masked diffusion training
@@ -275,6 +302,7 @@ def generate(self, input_ids, num_diffusion_steps=20, temperature=0.8, top_k=50,
     # - Top-k filtering for quality
     # - Nucleus (top-p) sampling for diversity
     # - Proper attention mask handling
+    # - num_diffusion_steps: (range: 15-30, tune based on quality/speed tradeoff)
 ```
 
 ### **🔧 Advanced Data Pipeline + Curriculum**

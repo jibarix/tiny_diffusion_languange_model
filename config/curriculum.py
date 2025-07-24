@@ -71,8 +71,8 @@ def get_curriculum_config() -> Dict[str, Any]:
         # Stage III: Refinement
         CurriculumStage(
             name="refinement", 
-            epochs=150,
-            masking_rate_range=(0.10, 0.30),
+            epochs=300,
+            masking_rate_range=(0.05, 0.20),
             data_selection_criteria={
                 'use_full_corpus': True,  # All data including complex examples
                 'include_outliers': True,

@@ -520,7 +520,8 @@ class CurriculumTrainer:
             
             # Periodic evaluation
             eval_every = self.training_config.get('eval_every', 5)
-            if self.global_step % (eval_every * len(train_loader) // 10) == 0:
+            eval_interval = max(1, eval_every * len(train_loader) // 10) if len(train_loader) > 0 else 1
+            if self.global_step % eval_interval == 0:
                 val_loss, val_perplexity = self._evaluate_stage(val_loader)
                 print(f"\nValidation - Loss: {val_loss:.4f}, Perplexity: {val_perplexity:.2f}")
                 
@@ -814,7 +815,9 @@ if __name__ == "__main__":
                 labels=labels
             )
             
-            loss = outputs['loss']
+            logits = outputs['logits']
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
             print(f"Forward pass successful! Loss: {loss.item():.4f}")
             break
         
@@ -844,6 +847,11 @@ def quick_training_test(config: Dict[str, Any], data_pipeline: DataPipeline, max
         trainer.current_stage['name'], 
         batch_size=config.get('training', {}).get('batch_size', 4)
     )
+    
+    # Check for empty loader (debug mode protection)
+    if len(train_loader) == 0:
+        print("Warning: Empty train_loader in debug mode")
+        return
     
     # Run a few training steps
     trainer.model.train()
@@ -879,7 +887,6 @@ def quick_training_test(config: Dict[str, Any], data_pipeline: DataPipeline, max
     print(f"Validation: Loss = {val_loss:.4f}, Perplexity = {val_perplexity:.2f}")
     
     print("Quick training test completed successfully!")
-    return trainer
 
 
 def estimate_training_time(config: Dict[str, Any], data_pipeline: DataPipeline) -> Dict[str, float]:
@@ -985,62 +992,6 @@ def test_trainer(config: Dict[str, Any], data_pipeline, max_steps: int = 10):
         print(f"[FAILED] Trainer test failed: {e}")
         import traceback
         traceback.print_exc()
-
-
-def quick_training_test(config: Dict[str, Any], data_pipeline, max_steps: int = 10):
-    """
-    Quick training test for debugging and validation.
-    
-    Runs a few training steps to verify the pipeline works correctly.
-    """
-    print(f"Running quick training test ({max_steps} steps)...")
-    
-    trainer = create_trainer_from_config(config, data_pipeline, device='cpu')
-    
-    # Setup first stage
-    trainer._setup_stage(0)
-    
-    # Create data loaders
-    train_loader, val_loader = data_pipeline.create_dataloaders(
-        trainer.current_stage['name'], 
-        batch_size=config.get('training', {}).get('batch_size', 4)
-    )
-    
-    # Run a few training steps
-    trainer.model.train()
-    step_count = 0
-    
-    for batch in train_loader:
-        if step_count >= max_steps:
-            break
-            
-        # Move to device
-        input_ids = batch['input_ids'].to(trainer.device)
-        attention_mask = batch['attention_mask'].to(trainer.device)
-        labels = batch['labels'].to(trainer.device)
-        
-        # Forward pass
-        trainer.optimizer.zero_grad()
-        outputs = trainer.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
-        )
-        loss = outputs['loss']
-        
-        # Backward pass
-        loss.backward()
-        trainer.optimizer.step()
-        
-        print(f"Step {step_count + 1}: Loss = {loss.item():.4f}")
-        step_count += 1
-    
-    # Quick evaluation
-    val_loss, val_perplexity = trainer._evaluate_stage(val_loader)
-    print(f"Validation: Loss = {val_loss:.4f}, Perplexity = {val_perplexity:.2f}")
-    
-    print("[OK] Quick training test completed successfully!")
-
 
 def estimate_training_time(config: Dict[str, Any], data_pipeline):
     """
