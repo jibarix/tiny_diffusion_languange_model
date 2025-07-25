@@ -681,15 +681,22 @@ class DiffusionDataset(Dataset):
         item = self.formatted_data[idx]
         input_ids = item['input_ids']
         
+        # Get vocab bounds for safe token IDs
+        vocab_size = len(self.tokenizer.compressed_vocab)
+        
         # Pad to sequence length
         if len(input_ids) < self.sequence_length:
-            pad_token_id = self.tokenizer.token_mapping.get('[PAD]', 0)
+            pad_token_id = self.tokenizer.token_mapping.get('[PAD]', vocab_size - 1)
             input_ids = input_ids + [pad_token_id] * (self.sequence_length - len(input_ids))
         else:
             input_ids = input_ids[:self.sequence_length]
         
+        # Ensure all token IDs are within vocab bounds
+        input_ids = [min(max(0, tid), vocab_size - 1) for tid in input_ids]
+        
         # Create attention mask
-        attention_mask = [1 if token_id != self.tokenizer.token_mapping.get('[PAD]', 0) else 0 for token_id in input_ids]
+        pad_token_id = self.tokenizer.token_mapping.get('[PAD]', vocab_size - 1)
+        attention_mask = [1 if token_id != pad_token_id else 0 for token_id in input_ids]
         
         # === DYNAMIC MASKING MODIFICATION ===
         # Base masking rate from stage configuration
@@ -706,7 +713,7 @@ class DiffusionDataset(Dataset):
             adaptive_masking_rate = base_masking_rate
         
         # Create masked version
-        mask_token_id = self.tokenizer.token_mapping.get('[MASK]', 1)
+        mask_token_id = self.tokenizer.token_mapping.get('[MASK]', vocab_size - 2)
         masked_input_ids = input_ids.copy()
         labels = [-100] * len(input_ids)  # -100 means ignore in loss
         
