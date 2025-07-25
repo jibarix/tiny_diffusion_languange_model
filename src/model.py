@@ -272,6 +272,7 @@ class TransformerBlock(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,
     ):
         # Pre-norm for attention
         normed_hidden_states = self.input_layernorm(hidden_states)
@@ -431,7 +432,7 @@ class MaskedDiffusionLM(nn.Module):
                     # Gradient checkpointing
                     def create_custom_forward(module):
                         def custom_forward(*inputs):
-                            return module(*inputs, use_cache=False)
+                            return module(*inputs, use_cache=False, output_attentions=output_attentions)
                         return custom_forward
                     
                     layer_outputs = torch.utils.checkpoint.checkpoint(
