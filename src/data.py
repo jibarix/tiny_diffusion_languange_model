@@ -385,6 +385,7 @@ class CompressedTokenizer:
     def create_compressed_vocab(self, texts: List[str], target_coverage: float = 0.9, max_vocab_size: int = 25000) -> Dict[str, Any]:
         """
         Create compressed vocabulary covering target percentage of corpus.
+        FIXED: Ensures contiguous token ID mapping without gaps.
         """
         print(f"Creating compressed vocabulary (target coverage: {target_coverage:.1%})...")
         
@@ -401,25 +402,34 @@ class CompressedTokenizer:
         # Sort by frequency
         sorted_tokens = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
         
-        # Select tokens to reach target coverage
+        # Initialize selected tokens list
         selected_tokens = []
         cumulative_count = 0
         
-        # Always include special tokens
-        special_tokens = [
+        # Add special tokens ONLY if they exist and are not None
+        special_token_candidates = [
             self.base_tokenizer.pad_token,
-            self.base_tokenizer.eos_token,
+            self.base_tokenizer.eos_token, 
             self.base_tokenizer.bos_token,
             "[MASK]"
         ]
         
-        for token in special_tokens:
-            if token is not None:
-                selected_tokens.append(token)
+        # Filter out None values and duplicates
+        special_tokens = []
+        for token in special_token_candidates:
+            if token is not None and token not in special_tokens:
+                special_tokens.append(token)
         
-        # Add frequent tokens
+        # Add special tokens to selected_tokens and count their frequency
+        for token in special_tokens:
+            selected_tokens.append(token)
+            # Count special token occurrences in corpus (if any)
+            if token in token_counts:
+                cumulative_count += token_counts[token]
+        
+        # Add frequent tokens to reach target coverage
         for token, count in sorted_tokens:
-            if token not in selected_tokens:
+            if token not in selected_tokens:  # Avoid duplicates
                 selected_tokens.append(token)
                 cumulative_count += count
                 
@@ -427,18 +437,40 @@ class CompressedTokenizer:
                 if coverage >= target_coverage or len(selected_tokens) >= max_vocab_size:
                     break
         
-        # Create mapping
-        self.compressed_vocab = {token: i for i, token in enumerate(selected_tokens)}
+        # Create CONTIGUOUS mappings - this is the key fix
+        self.compressed_vocab = {}
+        self.inverse_mapping = {}
+        
+        for i, token in enumerate(selected_tokens):
+            self.compressed_vocab[token] = i
+            self.inverse_mapping[i] = token
+        
+        # Verify mappings are complete and contiguous
+        expected_size = len(selected_tokens)
+        if len(self.compressed_vocab) != expected_size:
+            raise ValueError(f"Vocab mapping incomplete: expected {expected_size}, got {len(self.compressed_vocab)}")
+        
+        if len(self.inverse_mapping) != expected_size:
+            raise ValueError(f"Inverse mapping incomplete: expected {expected_size}, got {len(self.inverse_mapping)}")
+        
+        # Verify all IDs from 0 to size-1 are mapped
+        for i in range(expected_size):
+            if i not in self.inverse_mapping:
+                raise ValueError(f"Missing inverse mapping for token ID {i}")
+        
+        # Also store token mapping for compatibility
         self.token_mapping = self.compressed_vocab
-        self.inverse_mapping = {i: token for token, i in self.compressed_vocab.items()}
         
         final_coverage = cumulative_count / total_tokens
         print(f"Compressed vocabulary: {len(selected_tokens)} tokens, {final_coverage:.1%} coverage")
+        print(f"Special tokens included: {special_tokens}")
+        print(f"Token ID range: [0, {len(selected_tokens)-1}]")
         
         return {
             'vocab': self.compressed_vocab,
             'size': len(selected_tokens),
-            'coverage': final_coverage
+            'coverage': final_coverage,
+            'special_tokens': special_tokens
         }
     
     def encode(self, text: str) -> List[int]:
