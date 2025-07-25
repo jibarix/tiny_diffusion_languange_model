@@ -117,7 +117,7 @@ class CurriculumTrainer:
         self.tokens_processed = 0
         
         # Directories
-        self.output_dir = Path("outputs")
+        self.output_dir = Path(self.training_config.get("output_dir", "outputs"))
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.logs_dir = self.output_dir / "logs"
         self.samples_dir = self.output_dir / "samples"
@@ -159,15 +159,15 @@ class CurriculumTrainer:
             print(f"✗ Import failed: {e}")
             return None
 
-        # Update config with tokenizer info
-        model_config = self.config['model'].copy()
+        # *** FIX: Update self.config directly, not a copy ***
+        # This ensures the correct vocab size and token IDs are saved in the checkpoint.
         if self.data_pipeline.tokenizer:
-            model_config['vocab_size'] = len(self.data_pipeline.tokenizer.compressed_vocab)
-            model_config['mask_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('[MASK]', 1)
-            pad_token = self.data_pipeline.tokenizer.base_tokenizer.pad_token
-            model_config['pad_token_id'] = self.data_pipeline.tokenizer.token_mapping.get(pad_token, 2)
+            self.config['model']['vocab_size'] = len(self.data_pipeline.tokenizer.compressed_vocab)
+            self.config['model']['mask_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('[MASK]', 1)
+            self.config['model']['pad_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('[PAD]', 2)
+            self.config['model']['eos_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('<|endoftext|>', 0)
         
-        model = create_model_from_config(model_config)
+        model = create_model_from_config(self.config['model'])
         model.to(self.device)
         
         # Enable gradient checkpointing if configured
@@ -1030,7 +1030,7 @@ def estimate_training_time(config: Dict[str, Any], data_pipeline: DataPipeline) 
     
     estimates['total_hours'] = total_time
     
-    print(f"Training time estimates:")
+    print(f"Training estimate:")
     for stage_name, info in estimates.items():
         if stage_name != 'total_hours':
             print(f"  {stage_name}: {info['estimated_hours']:.1f}h ({info['epochs']} epochs, {info['steps']} steps)")

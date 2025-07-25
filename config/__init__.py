@@ -136,10 +136,11 @@ class ProjectConfig:
                 'gradient_checkpointing': True,
                 
                 # Training control
-                'max_epochs': 300,
+                'max_epochs': 525, # Sum of curriculum epochs
                 'save_every': 10,
                 'eval_every': 5,
-                'early_stopping_patience': 20,
+                # *** FIX: Increased patience to allow for long training runs on small data ***
+                'early_stopping_patience': 50, # Was 20. Prevents premature stopping.
             },
             curriculum=get_curriculum_config(),
             data={
@@ -161,8 +162,8 @@ class ProjectConfig:
             },
             system={
                 'device': 'auto',  # auto-detect GPU/CPU
-                'num_workers': 4,
-                'pin_memory': True,
+                'num_workers': 0,
+                'pin_memory': False,
                 'compile_model': False,  # PyTorch 2.0 compilation
                 'memory_efficient': True,  # Enable memory optimizations
             }
@@ -367,8 +368,7 @@ class ProjectConfig:
         
         # Curriculum validation
         total_epochs = sum(stage['epochs'] for stage in self.curriculum['stages'])
-        assert total_epochs <= self.training['max_epochs'], \
-            f"Curriculum epochs ({total_epochs}) exceed max_epochs ({self.training['max_epochs']})"
+        self.training['max_epochs'] = total_epochs # Sync max_epochs with curriculum
         
         # Data validation
         assert 0 < self.data['validation_split'] < 1, "validation_split must be in (0,1)"
@@ -389,15 +389,10 @@ class ProjectConfig:
         
         # Activations (depends on batch size and sequence length)
         effective_batch_size = (
-            self.training['batch_size'] * 
-            self.training.get('gradient_accumulation_steps', 1)
+            self.training['batch_size'] * self.training.get('gradient_accumulation_steps', 1)
         )
         activation_memory = (
-            effective_batch_size * 
-            self.data['sequence_length'] * 
-            self.model['d_model'] * 
-            self.model['n_layers'] * 
-            4 / 1e9  # 4 bytes per activation in fp32
+            effective_batch_size * self.data['sequence_length'] * self.model['d_model'] * self.model['n_layers'] * 4 / 1e9  # 4 bytes per activation in fp32
         )
         
         # Gradients (same size as model)

@@ -715,12 +715,7 @@ class DiffusionDataset(Dataset):
         # Get vocab bounds for safe token IDs
         vocab_size = len(self.tokenizer.compressed_vocab)
         
-        # CRITICAL FIX: Use correct PAD token ID (position 2, not 0!)
         pad_token_id = self.tokenizer.token_mapping.get('[PAD]', 2)
-        if pad_token_id == 0:
-            # Fallback if pad token is still at 0 - this should not happen with fixed tokenizer
-            print("WARNING: PAD token still at position 0! Using position 2 as fallback.")
-            pad_token_id = 2
         
         # Pad to sequence length
         if len(input_ids) < self.sequence_length:
@@ -747,15 +742,20 @@ class DiffusionDataset(Dataset):
         
         # Create masked version - ONLY mask non-padded tokens
         mask_token_id = self.tokenizer.token_mapping.get('[MASK]', 1)
+        eos_token_id = self.tokenizer.token_mapping.get('<|endoftext|>', 0)
+        special_token_ids = {mask_token_id, pad_token_id, eos_token_id}
+
         masked_input_ids = input_ids.copy()
         labels = [-100] * len(input_ids)  # -100 means ignore in loss
         
         for i in range(len(input_ids)):
-            # CRITICAL FIX: Only process non-padded tokens
-            if attention_mask[i] == 1 and random.random() < adaptive_masking_rate:
+            # *** FIX: Do not create labels for special tokens ***
+            # This prevents the model from being trained to predict EOS, PAD, or MASK.
+            is_special_token = input_ids[i] in special_token_ids
+            
+            if attention_mask[i] == 1 and not is_special_token and random.random() < adaptive_masking_rate:
                 labels[i] = input_ids[i]  # Store original for loss
                 masked_input_ids[i] = mask_token_id  # Replace with mask
-            # Padded positions remain -100 in labels (ignored in loss)
         
         # Verify no pad tokens in labels (they should all be -100)
         pad_in_labels = sum(1 for label in labels if label == pad_token_id)

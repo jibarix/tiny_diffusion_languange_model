@@ -88,7 +88,7 @@ class RotaryPositionalEmbedding(nn.Module):
         
         # Get cached values
         cos = self._cos_cached[:seq_len]  # [seq_len, dim//2]
-        sin = self._sin_cached[:seq_len]  # [seq_len, dim//2]
+        sin = self._sin_cached[:seq_len]  # [seq_len, head_dim//2]
         
         # Apply rotation
         return self._apply_rotary_emb(x, cos, sin)
@@ -338,8 +338,8 @@ class MaskedDiffusionLM(nn.Module):
         print(f"  MASK token ID: {self.mask_token_id}")
         print(f"  PAD token ID: {self.pad_token_id}")
         
-        # Embeddings
-        self.embed_tokens = nn.Embedding(self.vocab_size, self.hidden_size)
+        # Set padding_idx in the embedding layer
+        self.embed_tokens = nn.Embedding(self.vocab_size, self.hidden_size, padding_idx=self.pad_token_id)
         
         # Transformer layers
         self.layers = nn.ModuleList([
@@ -606,16 +606,15 @@ class MaskedDiffusionLM(nn.Module):
         device = input_ids.device
         batch_size = input_ids.size(0)
         
-        # Set default token IDs
-        if pad_token_id is None:
-            pad_token_id = self.pad_token_id or 0
-        if eos_token_id is None:
-            eos_token_id = pad_token_id
+        # Use model's configured token IDs as robust defaults
+        pad_token_id = self.pad_token_id if pad_token_id is None else pad_token_id
+        eos_token_id = self.eos_token_id if eos_token_id is None else eos_token_id
+        mask_token_id = self.mask_token_id
+
+        if mask_token_id is None:
+            raise ValueError("Mask token ID is not configured in the model.")
         
         # Initialize with all masks for new tokens
-        mask_token_id = self.mask_token_id or 1
-        
-        # Extend input with masked tokens
         new_tokens = torch.full((batch_size, max_new_tokens), mask_token_id, device=device, dtype=torch.long)
         
         # Combine prompt with masked new tokens
@@ -714,7 +713,11 @@ def load_model_checkpoint(filepath: str, device: str = 'cpu') -> Tuple[MaskedDif
     
     # Create model from config
     config = checkpoint['config']
-    model = create_model_from_config(config)
+    
+    # *** FIX: Pass the 'model' sub-dictionary from the project config ***
+    # The create_model_from_config function expects the model-specific config, not the entire project config.
+    model_config = config.get('model', config) # Use .get for backward compatibility if 'model' key is missing
+    model = create_model_from_config(model_config)
     
     # Load state dict
     model.load_state_dict(checkpoint['model_state_dict'])

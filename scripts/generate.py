@@ -342,7 +342,7 @@ class FixedTextGenerator:
     def _calculate_style_metrics(self, text: str) -> StyleMetrics:
         """Calculate basic style metrics"""
         if not text.strip():
-            return StyleMetrics()
+            return StyleMetrics(0,0,0,0,0,0,0,0,0)
         
         # Basic sentence splitting
         sentences = [s.strip() for s in text.split('.') if s.strip()]
@@ -426,17 +426,23 @@ def load_model_and_tokenizer(checkpoint_path: str, config_path: Optional[str] = 
         tokenizer.pad_token = tokenizer.eos_token
         logger.warning("Using fallback GPT-2 tokenizer")
     
-    # Update model config with actual tokenizer vocab size
+    # *** FIX: Synchronize model config with tokenizer's special token IDs ***
+    # This is the critical fix. It ensures the model is created with the correct token IDs.
     model_config = config['model'].copy()
-    if hasattr(tokenizer, 'compressed_vocab'):
+    if hasattr(tokenizer, 'compressed_vocab') and hasattr(tokenizer, 'token_mapping'):
         actual_vocab_size = len(tokenizer.compressed_vocab)
+        model_config['vocab_size'] = actual_vocab_size
+        model_config['eos_token_id'] = tokenizer.token_mapping.get('<|endoftext|>', 0)
+        model_config['mask_token_id'] = tokenizer.token_mapping.get('[MASK]', 1)
+        model_config['pad_token_id'] = tokenizer.token_mapping.get('[PAD]', 2)
+        logger.info(f"Synchronized model config with tokenizer special tokens: PAD={model_config['pad_token_id']}")
     else:
         actual_vocab_size = len(tokenizer.get_vocab())
-    
+        model_config['vocab_size'] = actual_vocab_size
+
     logger.info(f"Setting model vocab_size to {actual_vocab_size}")
-    model_config['vocab_size'] = actual_vocab_size
     
-    # Initialize model
+    # Initialize model with the corrected config
     model = MaskedDiffusionLM(model_config)
     
     # Load state dict

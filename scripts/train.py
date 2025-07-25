@@ -233,9 +233,15 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
     logger.info("Running evaluation...")
     
     try:
+        # *** FIX: Determine the correct device before loading the model ***
+        # The error occurs because 'auto' is not a valid map_location for torch.load.
+        # We need to resolve it to 'cuda' or 'cpu' first.
+        device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
         # Load the trained model and checkpoint
         from src.model import load_model_checkpoint
-        model, checkpoint = load_model_checkpoint(model_path, device='auto')
+        # Pass the resolved device string to the loading function
+        model, checkpoint = load_model_checkpoint(model_path, device=device_str)
         
         # Load tokenizer
         tokenizer = data_pipeline.tokenizer
@@ -245,7 +251,8 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
         
         # Create generator
         from src.evaluation import TextGenerator, GenerationConfig
-        generator = TextGenerator(model, tokenizer, device='auto')
+        # Pass the resolved device string to the generator
+        generator = TextGenerator(model, tokenizer, device=device_str)
         
         # Generation config
         gen_config = GenerationConfig(

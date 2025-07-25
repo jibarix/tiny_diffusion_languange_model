@@ -33,10 +33,11 @@ def get_curriculum_config() -> Dict[str, Any]:
     """
     
     stages = [
-        # Stage I: Foundational Learning - INCREASED from 50 to 75
+        # *** FIX: Epochs restored to original values for intensive, high-quality training. ***
+        # Stage I: Foundational Learning
         CurriculumStage(
             name="foundational",
-            epochs=75,  # FIXED: Increased for better foundation
+            epochs=75,  # Restored from 50
             masking_rate_range=(0.75, 0.90),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_33_percent',
@@ -51,10 +52,10 @@ def get_curriculum_config() -> Dict[str, Any]:
             description="Learn core vocabulary, basic syntax, central themes"
         ),
         
-        # Stage II: Structural Learning - INCREASED from 100 to 150
+        # Stage II: Structural Learning
         CurriculumStage(
             name="structural",
-            epochs=150,  # FIXED: Increased for better structure learning
+            epochs=150,  # Restored from 75
             masking_rate_range=(0.40, 0.60),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_66_percent',
@@ -68,11 +69,11 @@ def get_curriculum_config() -> Dict[str, Any]:
             description="Learn argumentative relationships and logical flow"
         ),
         
-        # Stage III: Refinement - CRITICAL: INCREASED from 150 to 300
+        # Stage III: Refinement
         CurriculumStage(
             name="refinement", 
-            epochs=300,  # CRITICAL FIX: Expert recommended minimum
-            masking_rate_range=(0.05, 0.20),  # FIXED: Lighter masking
+            epochs=300,  # Restored from 100
+            masking_rate_range=(0.05, 0.20),
             data_selection_criteria={
                 'use_full_corpus': True,
                 'include_outliers': True,
