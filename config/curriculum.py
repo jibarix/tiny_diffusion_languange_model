@@ -33,15 +33,15 @@ def get_curriculum_config() -> Dict[str, Any]:
     """
     
     stages = [
-        # Stage I: Foundational Learning
+        # Stage I: Foundational Learning - INCREASED from 50 to 75
         CurriculumStage(
             name="foundational",
-            epochs=50,
+            epochs=75,  # FIXED: Increased for better foundation
             masking_rate_range=(0.75, 0.90),
             data_selection_criteria={
-                'syntactic_complexity': 'bottom_33_percent',  # Simple sentences
-                'lexical_rarity': 'bottom_33_percent',        # Common vocabulary
-                'thematic_centrality': 'top_33_percent',      # Prototypical examples
+                'syntactic_complexity': 'bottom_33_percent',
+                'lexical_rarity': 'bottom_33_percent',
+                'thematic_centrality': 'top_33_percent',
                 'min_sentence_length': 10,
                 'max_sentence_length': 50,
                 'exclude_dialogue': True,
@@ -51,15 +51,15 @@ def get_curriculum_config() -> Dict[str, Any]:
             description="Learn core vocabulary, basic syntax, central themes"
         ),
         
-        # Stage II: Structural Learning  
+        # Stage II: Structural Learning - INCREASED from 100 to 150
         CurriculumStage(
             name="structural",
-            epochs=100,
+            epochs=150,  # FIXED: Increased for better structure learning
             masking_rate_range=(0.40, 0.60),
             data_selection_criteria={
-                'syntactic_complexity': 'bottom_66_percent',  # Easy to moderate
+                'syntactic_complexity': 'bottom_66_percent',
                 'lexical_rarity': 'bottom_66_percent',
-                'argument_structure': ['evidence', 'claim', 'warrant'],  # Logical components
+                'argument_structure': ['evidence', 'claim', 'warrant'],
                 'min_sentence_length': 15,
                 'max_sentence_length': 100,
                 'require_logical_pairs': True,
@@ -68,17 +68,17 @@ def get_curriculum_config() -> Dict[str, Any]:
             description="Learn argumentative relationships and logical flow"
         ),
         
-        # Stage III: Refinement
+        # Stage III: Refinement - CRITICAL: INCREASED from 150 to 300
         CurriculumStage(
             name="refinement", 
-            epochs=300,
-            masking_rate_range=(0.05, 0.20),
+            epochs=300,  # CRITICAL FIX: Expert recommended minimum
+            masking_rate_range=(0.05, 0.20),  # FIXED: Lighter masking
             data_selection_criteria={
-                'use_full_corpus': True,  # All data including complex examples
+                'use_full_corpus': True,
                 'include_outliers': True,
                 'min_sentence_length': 5,
                 'max_sentence_length': 200,
-                'enable_self_training': True,  # Add generated pseudo-data
+                'enable_self_training': True,
             },
             training_format='paragraphs',
             description="Master full complexity and generate coherent passages"

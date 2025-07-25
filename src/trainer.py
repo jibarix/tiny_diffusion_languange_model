@@ -470,6 +470,28 @@ class CurriculumTrainer:
                 # Optimizer step
                 self.optimizer.step()
             
+            # CRITICAL DEBUG: Verify loss masking is working correctly (both paths)
+            if self.global_step % 100 == 0:
+                valid_tokens = (labels != -100).sum().item()
+                batch_tokens = labels.numel()  # Avoid variable name conflict
+                pad_token_id = self.config.get('model', {}).get('pad_token_id', 2)
+                pad_in_labels = (labels == pad_token_id).sum().item()
+                
+                print(f"DEBUG Step {self.global_step}:")
+                print(f"  Valid tokens for loss: {valid_tokens}/{batch_tokens} ({valid_tokens/batch_tokens:.1%})")
+                print(f"  Pad tokens in labels: {pad_in_labels} (should be 0!)")
+                
+                # Check token distribution in predictions
+                with torch.no_grad():
+                    probs = F.softmax(outputs['logits'].view(-1, self.config['model']['vocab_size']), dim=-1)
+                    top_tokens = torch.topk(probs.mean(dim=0), k=5)
+                    print(f"  Top predicted tokens: {top_tokens.indices.tolist()}")
+                    print(f"  Top predicted probs: {top_tokens.values.tolist()}")
+            
+            if (labels == self.config.get('model', {}).get('pad_token_id', 2)).any():
+                logger.error(f"CRITICAL: Pad tokens found in labels - model will collapse!")
+                logger.error("Check tokenizer pad_token_id configuration immediately!")
+            
             # Scheduler step
             if self.scheduler is not None:
                 self.scheduler.step()

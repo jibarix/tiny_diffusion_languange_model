@@ -385,7 +385,7 @@ class CompressedTokenizer:
     def create_compressed_vocab(self, texts: List[str], target_coverage: float = 0.9, max_vocab_size: int = 25000) -> Dict[str, Any]:
         """
         Create compressed vocabulary covering target percentage of corpus.
-        FIXED: Ensures contiguous token ID mapping without gaps.
+        FIXED: Ensures proper token ID mapping with PAD != 0 to avoid collapse.
         """
         print(f"Creating compressed vocabulary (target coverage: {target_coverage:.1%})...")
         
@@ -406,22 +406,27 @@ class CompressedTokenizer:
         selected_tokens = []
         cumulative_count = 0
         
-        # Add special tokens ONLY if they exist and are not None
-        special_token_candidates = [
-            self.base_tokenizer.pad_token,
-            self.base_tokenizer.eos_token, 
-            self.base_tokenizer.bos_token,
-            "[MASK]"
-        ]
+        # CRITICAL FIX: Place special tokens in specific order to match GPT-2 expectations
+        # GPT-2 expects <|endoftext|> at position 0
+        special_tokens_ordered = []
         
-        # Filter out None values and duplicates
-        special_tokens = []
-        for token in special_token_candidates:
-            if token is not None and token not in special_tokens:
-                special_tokens.append(token)
+        # Add <|endoftext|> first (position 0) to match GPT-2
+        if self.base_tokenizer.eos_token:
+            special_tokens_ordered.append(self.base_tokenizer.eos_token)
+        
+        # Add MASK token next (position 1)
+        special_tokens_ordered.append("[MASK]")
+        
+        # Add PAD token at position 2 (NOT 0!)
+        if self.base_tokenizer.pad_token and self.base_tokenizer.pad_token not in special_tokens_ordered:
+            special_tokens_ordered.append(self.base_tokenizer.pad_token)
+        
+        # Add BOS if different from EOS
+        if self.base_tokenizer.bos_token and self.base_tokenizer.bos_token not in special_tokens_ordered:
+            special_tokens_ordered.append(self.base_tokenizer.bos_token)
         
         # Add special tokens to selected_tokens and count their frequency
-        for token in special_tokens:
+        for token in special_tokens_ordered:
             selected_tokens.append(token)
             # Count special token occurrences in corpus (if any)
             if token in token_counts:
@@ -437,7 +442,7 @@ class CompressedTokenizer:
                 if coverage >= target_coverage or len(selected_tokens) >= max_vocab_size:
                     break
         
-        # Create CONTIGUOUS mappings - this is the key fix
+        # Create CONTIGUOUS mappings
         self.compressed_vocab = {}
         self.inverse_mapping = {}
         
@@ -450,27 +455,22 @@ class CompressedTokenizer:
         if len(self.compressed_vocab) != expected_size:
             raise ValueError(f"Vocab mapping incomplete: expected {expected_size}, got {len(self.compressed_vocab)}")
         
-        if len(self.inverse_mapping) != expected_size:
-            raise ValueError(f"Inverse mapping incomplete: expected {expected_size}, got {len(self.inverse_mapping)}")
-        
-        # Verify all IDs from 0 to size-1 are mapped
-        for i in range(expected_size):
-            if i not in self.inverse_mapping:
-                raise ValueError(f"Missing inverse mapping for token ID {i}")
-        
         # Also store token mapping for compatibility
         self.token_mapping = self.compressed_vocab
         
         final_coverage = cumulative_count / total_tokens
         print(f"Compressed vocabulary: {len(selected_tokens)} tokens, {final_coverage:.1%} coverage")
-        print(f"Special tokens included: {special_tokens}")
+        print(f"FIXED TOKEN MAPPING:")
+        print(f"  Token 0 (EOS): {self.inverse_mapping[0]}")
+        print(f"  Token 1 (MASK): {self.inverse_mapping[1]}")
+        print(f"  Token 2 (PAD): {self.inverse_mapping.get(2, 'N/A')}")
         print(f"Token ID range: [0, {len(selected_tokens)-1}]")
         
         return {
             'vocab': self.compressed_vocab,
             'size': len(selected_tokens),
             'coverage': final_coverage,
-            'special_tokens': special_tokens
+            'special_tokens': special_tokens_ordered
         }
     
     def encode(self, text: str) -> List[int]:
@@ -716,9 +716,15 @@ class DiffusionDataset(Dataset):
         # Get vocab bounds for safe token IDs
         vocab_size = len(self.tokenizer.compressed_vocab)
         
+        # CRITICAL FIX: Use correct PAD token ID (position 2, not 0!)
+        pad_token_id = self.tokenizer.token_mapping.get('[PAD]', 2)
+        if pad_token_id == 0:
+            # Fallback if pad token is still at 0 - this should not happen with fixed tokenizer
+            print("WARNING: PAD token still at position 0! Using position 2 as fallback.")
+            pad_token_id = 2
+        
         # Pad to sequence length
         if len(input_ids) < self.sequence_length:
-            pad_token_id = self.tokenizer.token_mapping.get('[PAD]', vocab_size - 1)
             input_ids = input_ids + [pad_token_id] * (self.sequence_length - len(input_ids))
         else:
             input_ids = input_ids[:self.sequence_length]
@@ -726,33 +732,36 @@ class DiffusionDataset(Dataset):
         # Ensure all token IDs are within vocab bounds
         input_ids = [min(max(0, tid), vocab_size - 1) for tid in input_ids]
         
-        # Create attention mask
-        pad_token_id = self.tokenizer.token_mapping.get('[PAD]', vocab_size - 1)
+        # Create attention mask (1 for real tokens, 0 for padding)
         attention_mask = [1 if token_id != pad_token_id else 0 for token_id in input_ids]
         
-        # === DYNAMIC MASKING MODIFICATION ===
-        # Base masking rate from stage configuration
+        # Dynamic masking with proper bounds
         min_mask, max_mask = self.masking_rate_range
         base_masking_rate = random.uniform(min_mask, max_mask)
         
-        # Apply dynamic difficulty adjustment
+        # Apply dynamic difficulty adjustment if available
         if hasattr(self, 'attention_difficulty'):
-            # Scale masking rate based on model's attention uncertainty
             adaptive_masking_rate = base_masking_rate * self.attention_difficulty
-            # Clamp to reasonable bounds
             adaptive_masking_rate = max(0.05, min(0.95, adaptive_masking_rate))
         else:
             adaptive_masking_rate = base_masking_rate
         
-        # Create masked version
-        mask_token_id = self.tokenizer.token_mapping.get('[MASK]', vocab_size - 2)
+        # Create masked version - ONLY mask non-padded tokens
+        mask_token_id = self.tokenizer.token_mapping.get('[MASK]', 1)
         masked_input_ids = input_ids.copy()
         labels = [-100] * len(input_ids)  # -100 means ignore in loss
         
         for i in range(len(input_ids)):
+            # CRITICAL FIX: Only process non-padded tokens
             if attention_mask[i] == 1 and random.random() < adaptive_masking_rate:
                 labels[i] = input_ids[i]  # Store original for loss
                 masked_input_ids[i] = mask_token_id  # Replace with mask
+            # Padded positions remain -100 in labels (ignored in loss)
+        
+        # Verify no pad tokens in labels (they should all be -100)
+        pad_in_labels = sum(1 for label in labels if label == pad_token_id)
+        if pad_in_labels > 0:
+            print(f"WARNING: {pad_in_labels} pad tokens found in labels - this will bias training!")
         
         return {
             'input_ids': torch.tensor(masked_input_ids, dtype=torch.long),

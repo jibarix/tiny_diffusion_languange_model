@@ -326,9 +326,17 @@ class MaskedDiffusionLM(nn.Module):
         self.max_position_embeddings = config.get('max_position_embeddings', 2048)
         self.gradient_checkpointing = config.get('gradient_checkpointing', False)
         
-        # Special token IDs (set by tokenizer)
-        self.pad_token_id = config.get('pad_token_id')
-        self.mask_token_id = config.get('mask_token_id')
+        # CRITICAL FIX: Proper special token ID mapping
+        # Based on the new tokenizer order: 0=EOS, 1=MASK, 2=PAD
+        self.eos_token_id = config.get('eos_token_id', 0)  # <|endoftext|> at position 0
+        self.mask_token_id = config.get('mask_token_id', 1)  # [MASK] at position 1
+        self.pad_token_id = config.get('pad_token_id', 2)   # [PAD] at position 2 (NOT 0!)
+        
+        # Log the token mapping for verification
+        print(f"Model token configuration:")
+        print(f"  EOS token ID: {self.eos_token_id}")
+        print(f"  MASK token ID: {self.mask_token_id}")
+        print(f"  PAD token ID: {self.pad_token_id}")
         
         # Embeddings
         self.embed_tokens = nn.Embedding(self.vocab_size, self.hidden_size)
