@@ -345,11 +345,11 @@ class CompressedTokenizer:
         # Fallback handling for rare tokens
 ```
 
-### **🚀 Training Orchestrator with Advanced Features**
+### **🚀 Training Orchestrator with Advanced Features (Updated 2025)**
 
 #### **`src/trainer.py`** - **Complete Training Infrastructure**
 
-**3-Stage Curriculum Execution**:
+**3-Stage Curriculum Execution with Real-Time Adaptation**:
 ```python
 class CurriculumTrainer:
     def train_full_curriculum(self):
@@ -358,10 +358,11 @@ class CurriculumTrainer:
         # Stage III: Refinement learning (300 epochs)
         # Automatic stage transitions with validation
         # Learning rate decay between stages
-        # Comprehensive logging and checkpointing
+        # Real-time difficulty adjustment based on loss patterns
+        # Dynamic masking schedules based on attention entropy
 ```
 
-**Memory-Efficient Training Loop**:
+**Memory-Efficient Training Loop with 2025 Enhancements**:
 ```python
 def _train_epoch(self, train_loader, val_loader, epoch):
     # Mixed precision training with GradScaler
@@ -369,6 +370,16 @@ def _train_epoch(self, train_loader, val_loader, epoch):
     # Real-time memory monitoring and optimization
     # Throughput calculation and performance metrics
     # Periodic evaluation with early stopping
+    
+    # NEW: Real-time difficulty adjustment
+    if loss.item() < target_loss * 0.8:
+        self.difficulty_multiplier = min(1.5, self.difficulty_multiplier + 0.02)
+    elif loss.item() > target_loss * 1.2:
+        self.difficulty_multiplier = max(0.5, self.difficulty_multiplier - 0.02)
+    
+    # NEW: Dynamic masking based on attention entropy
+    attention_entropy = self._calculate_attention_entropy(outputs['attentions'])
+    train_loader.dataset.update_attention_difficulty(attention_entropy, self.difficulty_multiplier)
 ```
 
 **Advanced Optimization Setup**:
@@ -382,6 +393,58 @@ def _create_scheduler(self):
     # Cosine annealing with warm restarts
     # Per-stage scheduling with smooth transitions
     # Warmup periods for training stability
+```
+
+### **🔧 Advanced Data Pipeline with 2025 Curriculum Updates**
+
+#### **`src/data.py`** - **Intelligent Data Processing with Dynamic Masking**
+
+**Enhanced Dynamic Dataset with Attention-Based Masking**:
+```python
+class DiffusionDataset(Dataset):
+    def __getitem__(self, idx):
+        # Base masking rate from stage configuration
+        base_masking_rate = random.uniform(min_mask, max_mask)
+        
+        # NEW: Apply dynamic difficulty adjustment
+        if hasattr(self, 'attention_difficulty'):
+            adaptive_masking_rate = base_masking_rate * self.attention_difficulty
+            adaptive_masking_rate = max(0.05, min(0.95, adaptive_masking_rate))
+        else:
+            adaptive_masking_rate = base_masking_rate
+        
+        # Apply adaptive masking to tokens
+        
+    def update_attention_difficulty(self, attention_entropy, difficulty_multiplier):
+        # Real-time masking adjustment based on model's attention patterns
+        self.attention_difficulty = attention_entropy * difficulty_multiplier
+```
+
+**Multi-Dimensional Difficulty Scoring with 2025 Enhancements**:
+```python
+class DifficultyScorer:
+    def compute_lexical_difficulty(self, segments):
+        # IDF-based rarity scoring with reference corpus
+        
+    def compute_syntactic_difficulty(self, segments):
+        # Composite linguistic features: sentence length, clause count, 
+        # Flesch-Kincaid grade, parse tree depth, complex word ratio
+        
+    def compute_centrality_scores(self, segments):
+        # K-means clustering on sentence embeddings for thematic coherence
+        
+    def compute_composite_scores(self, segments):
+        # Weighted combination with real-time adaptation capability
+```
+
+**Intelligent Curriculum Construction**:
+```python
+class CurriculumConstructor:
+    def _select_segments_for_stage(self, segments, criteria):
+        # Stage I: bottom_33_percent complexity + top_33_percent centrality
+        # Stage II: bottom_66_percent complexity + logical pairs
+        # Stage III: full_corpus + outliers + complex examples
+        # NEW: Support for real-time difficulty scaling
 ```
 
 ### **📊 Comprehensive Evaluation Suite**

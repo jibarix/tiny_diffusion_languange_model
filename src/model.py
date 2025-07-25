@@ -297,6 +297,8 @@ class TransformerBlock(nn.Module):
         hidden_states = hidden_states + self.dropout(mlp_output)
         
         outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (attn_weights,)
         if use_cache:
             outputs += (present_key_value,)
         

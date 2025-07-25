@@ -232,49 +232,51 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
     """
     logger.info("Running evaluation...")
     
-    # Load the trained model
-    generator = TextGenerator.from_checkpoint(model_path, config)
-    
-    # Generate sample texts
-    prompts = [
-        "The origin of",
-        "Natural selection",
-        "In the struggle for existence",
-        "The evidence for evolution"
-    ]
-    
-    logger.info("Generating sample texts...")
-    for prompt in prompts:
-        generated = generator.generate(
-            prompt=prompt,
-            max_length=100,
-            temperature=0.8,
-            do_sample=True
-        )
-        logger.info(f"Prompt: '{prompt}'")
-        logger.info(f"Generated: {generated}")
-        logger.info("-" * 50)
-    
-    # Style analysis (if evaluation data available)
     try:
-        analyzer = StyleAnalyzer()
+        # Load the trained model and checkpoint
+        from src.model import load_model_checkpoint
+        model, checkpoint = load_model_checkpoint(model_path, device='auto')
         
-        # Generate evaluation text
-        eval_texts = []
+        # Load tokenizer
+        tokenizer = data_pipeline.tokenizer
+        if tokenizer is None:
+            logger.warning("No tokenizer available, skipping evaluation")
+            return
+        
+        # Create generator
+        from src.evaluation import TextGenerator, GenerationConfig
+        generator = TextGenerator(model, tokenizer, device='auto')
+        
+        # Generation config
+        gen_config = GenerationConfig(
+            max_new_tokens=50,  # Reduced for debug mode
+            temperature=0.8,
+            top_p=0.9,
+            top_k=50,
+            num_diffusion_steps=10  # Reduced for speed
+        )
+        
+        # Generate sample texts
+        prompts = [
+            "The origin of",
+            "Natural selection"
+        ]
+        
+        logger.info("Generating sample texts...")
         for prompt in prompts:
-            text = generator.generate(prompt=prompt, max_length=200, temperature=0.7)
-            eval_texts.append(text)
+            try:
+                result = generator.generate(prompt, gen_config)
+                logger.info(f"Prompt: '{prompt}'")
+                logger.info(f"Generated: {result.generated_text}")
+                logger.info("-" * 50)
+            except Exception as e:
+                logger.warning(f"Generation failed for prompt '{prompt}': {e}")
         
-        # Analyze style metrics
-        metrics = analyzer.analyze_style_metrics(eval_texts)
-        logger.info("Style Analysis Results:")
-        for metric, value in metrics.items():
-            logger.info(f"  {metric}: {value:.3f}")
-            
+        logger.info("Basic evaluation complete!")
+        
     except Exception as e:
-        logger.warning(f"Style analysis failed: {e}")
-    
-    logger.info("Evaluation complete!")
+        logger.error(f"Evaluation failed: {e}")
+        logger.info("Skipping evaluation - training was successful though!")
 
 
 def main():

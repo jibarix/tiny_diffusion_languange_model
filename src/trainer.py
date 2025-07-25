@@ -104,6 +104,10 @@ class CurriculumTrainer:
         self.optimizer = None
         self.scheduler = None
         self.scaler = None
+
+        # Real-time difficulty adjustment
+        self.difficulty_multiplier = 1.0
+        self.stage_target_losses = {}
         
         # Metrics and logging
         self.metrics_history = []
@@ -395,14 +399,11 @@ class CurriculumTrainer:
         return avg_loss, perplexity
     
     def _train_epoch(self, train_loader: DataLoader, val_loader: DataLoader, epoch: int) -> Tuple[float, float]:
-        """Train for one epoch"""
+        """Train for one epoch with dynamic masking and real-time difficulty adjustment"""
         self.model.train()
         total_loss = 0.0
         total_tokens = 0
         epoch_start_time = time.time()
-        
-        # Get label smoothing from config
-        label_smoothing = self.training_config.get('label_smoothing', 0.0)
         
         # Progress bar
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
@@ -425,7 +426,7 @@ class CurriculumTrainer:
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         labels=labels,
-                        label_smoothing=label_smoothing
+                        output_attentions=True  # Need attentions for dynamic masking
                     )
                     loss = outputs['loss']
                 
@@ -450,7 +451,7 @@ class CurriculumTrainer:
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     labels=labels,
-                    label_smoothing=label_smoothing
+                    output_attentions=True
                 )
                 loss = outputs['loss']
                 
@@ -473,6 +474,19 @@ class CurriculumTrainer:
             if self.scheduler is not None:
                 self.scheduler.step()
             
+            # === MODIFICATION 1: Real-time Difficulty Adjustment ===
+            if self.global_step > 100:  # Allow warmup
+                target_loss = self.stage_target_losses.get(self.current_stage_idx, loss.item())
+                if loss.item() < target_loss * 0.8:
+                    self.difficulty_multiplier = min(1.5, self.difficulty_multiplier + 0.02)
+                elif loss.item() > target_loss * 1.2:
+                    self.difficulty_multiplier = max(0.5, self.difficulty_multiplier - 0.02)
+            
+            # === MODIFICATION 2: Dynamic Masking Based on Attention ===
+            if outputs.get('attentions') is not None and hasattr(train_loader.dataset, 'update_attention_difficulty'):
+                attention_entropy = self._calculate_attention_entropy(outputs['attentions'])
+                train_loader.dataset.update_attention_difficulty(attention_entropy, self.difficulty_multiplier)
+            
             # Calculate metrics
             step_end_time = time.time()
             step_duration = step_end_time - step_start_time
@@ -489,7 +503,7 @@ class CurriculumTrainer:
                 masking_rate = num_masked / (batch_size * seq_length)
             else:
                 min_mask, max_mask = self.current_stage['masking_rate_range']
-                masking_rate = (min_mask + max_mask) / 2
+                masking_rate = (min_mask + max_mask) / 2 * self.difficulty_multiplier
             
             # Memory usage
             if self.device.type == 'cuda':
@@ -514,11 +528,12 @@ class CurriculumTrainer:
             
             self._log_metrics(metrics)
             
-            # Update progress bar
+            # Update progress bar with difficulty info
             pbar.set_postfix({
                 'loss': f"{loss.item():.4f}",
                 'ppl': f"{math.exp(loss.item()):.2f}",
                 'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                'diff': f"{self.difficulty_multiplier:.2f}",  # Show difficulty multiplier
                 'mem': f"{memory_allocated:.1f}GB"
             })
             
@@ -535,10 +550,21 @@ class CurriculumTrainer:
                 val_loss, val_perplexity = self._evaluate_stage(val_loader)
                 print(f"\nValidation - Loss: {val_loss:.4f}, Perplexity: {val_perplexity:.2f}")
                 
+                # Update target loss for difficulty adjustment
+                if self.current_stage_idx not in self.stage_target_losses:
+                    self.stage_target_losses[self.current_stage_idx] = val_loss
+                else:
+                    # Exponential moving average
+                    self.stage_target_losses[self.current_stage_idx] = (
+                        0.9 * self.stage_target_losses[self.current_stage_idx] + 
+                        0.1 * val_loss
+                    )
+                
                 if self.use_wandb:
                     wandb.log({
                         'val_loss': val_loss,
                         'val_perplexity': val_perplexity,
+                        'difficulty_multiplier': self.difficulty_multiplier,
                     }, step=self.global_step)
         
         # Calculate epoch averages
@@ -546,6 +572,34 @@ class CurriculumTrainer:
         avg_perplexity = math.exp(avg_loss)
         
         return avg_loss, avg_perplexity
+
+
+    def _calculate_attention_entropy(self, attentions):
+        """
+        Calculate attention entropy to measure model uncertainty.
+        Higher entropy = model is uncertain = increase difficulty
+        """
+        if not attentions or len(attentions) == 0:
+            return 1.0  # Default difficulty
+        
+        # Use last layer attention (most refined)
+        last_attention = attentions[-1]  # [batch, heads, seq, seq]
+        
+        # Average across batch and heads
+        avg_attention = last_attention.mean(dim=(0, 1))  # [seq, seq]
+        
+        # Calculate entropy for each position
+        entropies = []
+        for i in range(avg_attention.size(0)):
+            attention_dist = avg_attention[i]
+            # Add small epsilon to avoid log(0)
+            entropy = -(attention_dist * torch.log(attention_dist + 1e-8)).sum()
+            entropies.append(entropy.item())
+        
+        # Return normalized entropy (0.5 to 1.5 range)
+        mean_entropy = np.mean(entropies)
+        normalized_entropy = 0.5 + (mean_entropy / 5.0)  # Rough normalization
+        return min(1.5, max(0.5, normalized_entropy))
     
     def train_stage(self, stage_idx: int) -> StageResults:
         """Train a single curriculum stage"""

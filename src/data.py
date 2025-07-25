@@ -691,9 +691,19 @@ class DiffusionDataset(Dataset):
         # Create attention mask
         attention_mask = [1 if token_id != self.tokenizer.token_mapping.get('[PAD]', 0) else 0 for token_id in input_ids]
         
-        # Sample masking rate for this step
+        # === DYNAMIC MASKING MODIFICATION ===
+        # Base masking rate from stage configuration
         min_mask, max_mask = self.masking_rate_range
-        masking_rate = random.uniform(min_mask, max_mask)
+        base_masking_rate = random.uniform(min_mask, max_mask)
+        
+        # Apply dynamic difficulty adjustment
+        if hasattr(self, 'attention_difficulty'):
+            # Scale masking rate based on model's attention uncertainty
+            adaptive_masking_rate = base_masking_rate * self.attention_difficulty
+            # Clamp to reasonable bounds
+            adaptive_masking_rate = max(0.05, min(0.95, adaptive_masking_rate))
+        else:
+            adaptive_masking_rate = base_masking_rate
         
         # Create masked version
         mask_token_id = self.tokenizer.token_mapping.get('[MASK]', 1)
@@ -701,7 +711,7 @@ class DiffusionDataset(Dataset):
         labels = [-100] * len(input_ids)  # -100 means ignore in loss
         
         for i in range(len(input_ids)):
-            if attention_mask[i] == 1 and random.random() < masking_rate:
+            if attention_mask[i] == 1 and random.random() < adaptive_masking_rate:
                 labels[i] = input_ids[i]  # Store original for loss
                 masked_input_ids[i] = mask_token_id  # Replace with mask
         
@@ -712,6 +722,9 @@ class DiffusionDataset(Dataset):
             'original_text': item['text']
         }
 
+    def update_attention_difficulty(self, attention_entropy, difficulty_multiplier):
+        """Update masking difficulty based on model's attention patterns"""
+        self.attention_difficulty = attention_entropy * difficulty_multiplier
 
 class DataPipeline:
     """Complete data processing pipeline"""
