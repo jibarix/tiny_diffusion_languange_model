@@ -387,6 +387,7 @@ class MaskedDiffusionLM(nn.Module):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            label_smoothing: Optional[float] = None,  # NEW PARAMETER
         ):
             use_cache = use_cache if use_cache is not None else self.config.get('use_cache', False)
             return_dict = return_dict if return_dict is not None else True
@@ -474,8 +475,9 @@ class MaskedDiffusionLM(nn.Module):
                 valid_mask = (shift_labels >= 0) & (shift_labels < self.vocab_size)
                 shift_labels = torch.where(valid_mask, shift_labels, -100)
                 
-                # Compute loss only on non-ignored positions (labels != -100)
-                loss_fct = CrossEntropyLoss(ignore_index=-100)
+                # Use label smoothing if provided, otherwise default to 0.0
+                smoothing = label_smoothing if label_smoothing is not None else 0.0
+                loss_fct = CrossEntropyLoss(ignore_index=-100, label_smoothing=smoothing)
                 loss = loss_fct(shift_logits, shift_labels)
             
             if not return_dict:

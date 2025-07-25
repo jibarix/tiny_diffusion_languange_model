@@ -113,22 +113,29 @@ class ProjectConfig:
     
     @classmethod
     def default(cls) -> 'ProjectConfig':
-        """Create default configuration with all standard parameters"""
+        """Create default configuration with research-optimized parameters"""
         from .model import get_model_config
         from .curriculum import get_curriculum_config
         
         return cls(
             model=get_model_config(),
             training={
-                'batch_size': 32,
-                'learning_rate': 2e-4,
-                'weight_decay': 0.1,
-                'warmup_steps': 1000,
+                # Core optimization parameters (2025 research-validated)
+                'batch_size': 8,                    # Reduced from 32 for 8GB VRAM stability
+                'learning_rate': 1e-4,              # Reduced from 2e-4 for stable convergence
+                'weight_decay': 0.01,               # Reduced from 0.1 for less regularization
+                'warmup_steps': 1500,               # Increased from 1000 for better warmup
                 'gradient_clipping': 1.0,
                 'optimizer': 'AdamW',
                 'scheduler': 'cosine_with_restarts',
+                
+                # Advanced optimization features
+                'label_smoothing': 0.1,             # NEW - reduces overconfidence/repetition
+                'gradient_accumulation_steps': 2,   # NEW - effective batch size = 16
                 'mixed_precision': True,
                 'gradient_checkpointing': True,
+                
+                # Training control
                 'max_epochs': 300,
                 'save_every': 10,
                 'eval_every': 5,
@@ -144,9 +151,11 @@ class ProjectConfig:
                 'random_seed': 42,
             },
             evaluation={
+                # Optimized generation parameters
                 'generation_length': 100,
-                'temperature': 0.8,
-                'top_p': 0.9,
+                'temperature': 0.6,                 # Reduced from 0.8 for less randomness
+                'top_p': 0.85,                     # Reduced from 0.9 for better coherence
+                'top_k': 20,                       # Reduced from 50 for focused sampling
                 'num_samples': 5,
                 'perplexity_eval_size': 1000,
             },
@@ -155,7 +164,7 @@ class ProjectConfig:
                 'num_workers': 4,
                 'pin_memory': True,
                 'compile_model': False,  # PyTorch 2.0 compilation
-                'memory_efficient': False,  # Enable memory optimizations
+                'memory_efficient': True,  # Enable memory optimizations
             }
         )
     
@@ -175,10 +184,13 @@ class ProjectConfig:
         # Recalculate head_dim after changing d_model and n_heads
         config.model['head_dim'] = config.model['d_model'] // config.model['n_heads']
         
-        # Fast training
+        # Fast training with optimized parameters
         config.training.update({
-            'batch_size': 4,
-            'max_epochs': 3,  # 1 epoch per stage
+            'batch_size': 4,                # Even smaller for debug
+            'learning_rate': 1e-4,          # Keep optimized LR
+            'label_smoothing': 0.1,         # Keep optimization
+            'gradient_accumulation_steps': 2,
+            'max_epochs': 3,                # 1 epoch per stage
             'save_every': 1,
             'eval_every': 1,
         })
@@ -194,6 +206,13 @@ class ProjectConfig:
             'validation_split': 0.2,
         })
         
+        # Keep optimized generation parameters
+        config.evaluation.update({
+            'temperature': 0.6,
+            'top_k': 20,
+            'top_p': 0.85,
+        })
+        
         return config
     
     @classmethod
@@ -201,9 +220,10 @@ class ProjectConfig:
         """Create memory-efficient configuration for 8GB VRAM"""
         config = cls.default()
         
-        # Optimize for memory
+        # Memory optimizations (already applied in default)
         config.training.update({
-            'batch_size': 16,  # Reduced from 32
+            'batch_size': 4,                # Even smaller for extreme memory efficiency
+            'gradient_accumulation_steps': 4, # Effective batch size = 16
             'gradient_checkpointing': True,
             'mixed_precision': True,
         })
@@ -213,6 +233,9 @@ class ProjectConfig:
             'd_model': 512,  # Reduced from 768
             'n_layers': 10,  # Reduced from 12
         })
+        
+        # Recalculate head_dim
+        config.model['head_dim'] = config.model['d_model'] // config.model['n_heads']
         
         config.system.update({
             'memory_efficient': True,
@@ -228,8 +251,10 @@ class ProjectConfig:
         
         # Slightly more realistic than debug but still fast
         config.training.update({
-            'batch_size': 8,
-            'max_epochs': 6,  # 2 epochs per stage
+            'batch_size': 8,                # Use optimized batch size
+            'learning_rate': 1e-4,          # Keep optimized LR
+            'label_smoothing': 0.1,         # Keep optimization
+            'max_epochs': 6,                # 2 epochs per stage
         })
         
         config.curriculum['stages'][0]['epochs'] = 2
@@ -338,6 +363,7 @@ class ProjectConfig:
         assert 0 < self.training['learning_rate'] < 1, "Invalid learning rate"
         assert self.training['batch_size'] > 0, "batch_size must be positive"
         assert 0 <= self.training['weight_decay'] <= 1, "weight_decay must be in [0,1]"
+        assert 0 <= self.training.get('label_smoothing', 0.1) <= 1, "label_smoothing must be in [0,1]"
         
         # Curriculum validation
         total_epochs = sum(stage['epochs'] for stage in self.curriculum['stages'])
@@ -347,6 +373,11 @@ class ProjectConfig:
         # Data validation
         assert 0 < self.data['validation_split'] < 1, "validation_split must be in (0,1)"
         assert self.data['sequence_length'] > 0, "sequence_length must be positive"
+        
+        # Generation validation
+        assert 0 < self.evaluation['temperature'] <= 2.0, "temperature must be in (0,2]"
+        assert 0 < self.evaluation['top_p'] <= 1.0, "top_p must be in (0,1]"
+        assert self.evaluation['top_k'] > 0, "top_k must be positive"
     
     def estimate_memory_usage(self) -> Dict[str, float]:
         """Estimate GPU memory usage in GB"""
@@ -357,8 +388,12 @@ class ProjectConfig:
         model_memory = params * 2 / 1e9  # 2 bytes per param in fp16
         
         # Activations (depends on batch size and sequence length)
-        activation_memory = (
+        effective_batch_size = (
             self.training['batch_size'] * 
+            self.training.get('gradient_accumulation_steps', 1)
+        )
+        activation_memory = (
+            effective_batch_size * 
             self.data['sequence_length'] * 
             self.model['d_model'] * 
             self.model['n_layers'] * 
@@ -380,6 +415,7 @@ class ProjectConfig:
             'optimizer': optimizer_memory,
             'total': total,
             'total_with_overhead': total * 1.2,  # 20% overhead for PyTorch
+            'effective_batch_size': effective_batch_size,
         }
     
     def get(self, key_path: str, default: Any = None) -> Any:

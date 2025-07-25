@@ -354,6 +354,9 @@ class CurriculumTrainer:
         total_loss = 0.0
         total_tokens = 0
         
+        # Get label smoothing for consistent evaluation
+        label_smoothing = self.training_config.get('label_smoothing', 0.0)
+        
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Evaluating", leave=False):
                 # Move to device
@@ -367,14 +370,16 @@ class CurriculumTrainer:
                         outputs = self.model(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
-                            labels=labels
+                            labels=labels,
+                            label_smoothing=label_smoothing
                         )
                         loss = outputs['loss']
                 else:
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=labels
+                        labels=labels,
+                        label_smoothing=label_smoothing
                     )
                     loss = outputs['loss']
                 
@@ -396,6 +401,9 @@ class CurriculumTrainer:
         total_tokens = 0
         epoch_start_time = time.time()
         
+        # Get label smoothing from config
+        label_smoothing = self.training_config.get('label_smoothing', 0.0)
+        
         # Progress bar
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
         
@@ -416,7 +424,8 @@ class CurriculumTrainer:
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=labels
+                        labels=labels,
+                        label_smoothing=label_smoothing
                     )
                     loss = outputs['loss']
                 
@@ -440,7 +449,8 @@ class CurriculumTrainer:
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    labels=labels
+                    labels=labels,
+                    label_smoothing=label_smoothing
                 )
                 loss = outputs['loss']
                 

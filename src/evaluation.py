@@ -49,9 +49,9 @@ class GenerationConfig:
     """Configuration for text generation"""
     max_new_tokens: int = 100
     num_diffusion_steps: int = 20
-    temperature: float = 0.8
-    top_p: float = 0.9
-    top_k: int = 50
+    temperature: float = 0.6
+    top_p: float = 0.85
+    top_k: int = 20
     do_sample: bool = True
     num_return_sequences: int = 1
     seed: Optional[int] = None
