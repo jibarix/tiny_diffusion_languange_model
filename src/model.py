@@ -680,12 +680,9 @@ def save_model_checkpoint(
     epoch: int,
     step: int,
     loss: float,
-    filepath: str,
-    current_stage_idx: Optional[int] = None,
-    completed_stages: Optional[List[int]] = None,
-    stage_results: Optional[List[Dict[str, Any]]] = None
+    filepath: str
 ):
-    """Save model checkpoint with stage information"""
+    """Save model checkpoint"""
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -693,59 +690,18 @@ def save_model_checkpoint(
         'epoch': epoch,
         'step': step,
         'loss': loss,
-        # Stage-specific information
-        'current_stage_idx': current_stage_idx,
-        'completed_stages': completed_stages or [],
-        'stage_results': stage_results or []
     }
     torch.save(checkpoint, filepath)
     print(f"Checkpoint saved: {filepath}")
-    if current_stage_idx is not None:
-        print(f"  Current stage: {current_stage_idx + 1}")
-        print(f"  Completed stages: {len(completed_stages or [])}")
 
 
 def load_model_checkpoint(filepath: str, device: str = 'cpu') -> Tuple[MaskedDiffusionLM, Dict[str, Any]]:
-    """Load model checkpoint with backward compatibility"""
+    """Load model checkpoint"""
     checkpoint = torch.load(filepath, map_location=device)
     
-    # Extract config - handle nested or flat formats
-    config = checkpoint.get('config', {})
-    if 'model' in config:
-        model_config = config['model']
-    else:
-        # Assume flat config format
-        model_config = config
-    
-    # Validate required model config keys
-    required_keys = ['d_model', 'n_layers', 'n_heads', 'vocab_size']
-    missing_keys = [key for key in required_keys if key not in model_config]
-    
-    if missing_keys:
-        # Try to infer from state dict if config is incomplete
-        state_dict = checkpoint.get('model_state_dict', {})
-        if 'embed_tokens.weight' in state_dict:
-            vocab_size, d_model = state_dict['embed_tokens.weight'].shape
-            model_config['vocab_size'] = vocab_size
-            model_config['d_model'] = d_model
-            
-            # Count layers
-            layer_keys = [k for k in state_dict.keys() if k.startswith('layers.')]
-            if layer_keys:
-                max_layer = max([int(k.split('.')[1]) for k in layer_keys]) + 1
-                model_config['n_layers'] = max_layer
-            
-            # Infer heads from attention weights if available
-            for key in state_dict.keys():
-                if 'self_attn.q_proj.weight' in key:
-                    q_proj_shape = state_dict[key].shape
-                    model_config['n_heads'] = model_config.get('n_heads', 8)  # Default fallback
-                    break
-        else:
-            raise ValueError(f"Cannot load checkpoint: missing config keys {missing_keys} and unable to infer from state_dict")
-    
     # Create model from config
-    model = create_model_from_config({'model': model_config})
+    config = checkpoint['config']
+    model = create_model_from_config(config)
     
     # Load state dict
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -754,11 +710,6 @@ def load_model_checkpoint(filepath: str, device: str = 'cpu') -> Tuple[MaskedDif
     print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
     print(f"  Step: {checkpoint.get('step', 'unknown')}")
     print(f"  Loss: {checkpoint.get('loss', 'unknown')}")
-    
-    # Print stage info if available
-    if 'current_stage_idx' in checkpoint:
-        print(f"  Current stage: {checkpoint['current_stage_idx'] + 1}")
-        print(f"  Completed stages: {checkpoint.get('completed_stages', [])}")
     
     return model, checkpoint
 

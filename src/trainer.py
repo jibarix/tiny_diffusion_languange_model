@@ -319,15 +319,12 @@ class CurriculumTrainer:
                   f"Tokens/s: {metrics.throughput_tokens_per_sec:.0f}")
     
     def _save_checkpoint(self, epoch: int, loss: float, is_best: bool = False):
-        """Save model checkpoint with stage information"""
+        """Save model checkpoint"""
         checkpoint_name = f"checkpoint_stage{self.current_stage_idx + 1}_epoch{epoch}.pt"
         if is_best:
             checkpoint_name = f"best_stage{self.current_stage_idx + 1}.pt"
         
         checkpoint_path = self.checkpoint_dir / checkpoint_name
-        
-        # Determine completed stages
-        completed_stages = list(range(self.current_stage_idx))
         
         save_model_checkpoint(
             model=self.model,
@@ -336,10 +333,7 @@ class CurriculumTrainer:
             epoch=epoch,
             step=self.global_step,
             loss=loss,
-            filepath=str(checkpoint_path),
-            current_stage_idx=self.current_stage_idx,
-            completed_stages=completed_stages,
-            stage_results=[asdict(r) for r in self.stage_results]
+            filepath=str(checkpoint_path)
         )
         
         # Also save latest checkpoint
@@ -351,12 +345,8 @@ class CurriculumTrainer:
             epoch=epoch,
             step=self.global_step,
             loss=loss,
-            filepath=str(latest_path),
-            current_stage_idx=self.current_stage_idx,
-            completed_stages=completed_stages,
-            stage_results=[asdict(r) for r in self.stage_results]
+            filepath=str(latest_path)
         )
-
     
     def _evaluate_stage(self, val_loader: DataLoader) -> Tuple[float, float]:
         """Evaluate model on validation set"""
@@ -640,33 +630,22 @@ class CurriculumTrainer:
         return results
     
     def train_full_curriculum(self) -> List[StageResults]:
-        """Train complete 3-stage curriculum with resume support"""
+        """Train complete 3-stage curriculum"""
         print(f"\n{'='*80}")
-        print(f"STARTING CURRICULUM TRAINING")
+        print(f"STARTING FULL CURRICULUM TRAINING")
         print(f"{'='*80}")
         print(f"Stages to train: {len(self.stages)}")
         print(f"Device: {self.device}")
         print(f"Model config: {self.config['model']['d_model']}d, {self.config['model']['n_layers']}L")
         
-        # Determine starting stage
-        start_stage = getattr(self, 'current_stage_idx', 0)
-        if hasattr(self, 'completed_stages') and self.completed_stages:
-            start_stage = max(self.completed_stages) + 1
-            print(f"Resuming from stage {start_stage + 1} (stages {[s+1 for s in self.completed_stages]} already completed)")
-        
         curriculum_start_time = time.time()
-        all_results = getattr(self, 'stage_results', [])
+        all_results = []
         
         try:
-            # Train remaining stages
-            for stage_idx in range(start_stage, len(self.stages)):
+            # Train each stage
+            for stage_idx in range(len(self.stages)):
                 stage_results = self.train_stage(stage_idx)
                 all_results.append(stage_results)
-                
-                # Mark stage as completed
-                if not hasattr(self, 'completed_stages'):
-                    self.completed_stages = []
-                self.completed_stages.append(stage_idx)
                 
                 # Log stage completion to wandb
                 if self.use_wandb:
@@ -705,8 +684,8 @@ class CurriculumTrainer:
         print(f"\nStage Summary:")
         for i, results in enumerate(all_results):
             print(f"  Stage {i+1} ({results.stage_name}): "
-                f"Loss {results.best_loss:.4f} -> {results.final_loss:.4f} "
-                f"({results.epochs_completed} epochs, {results.training_time/3600:.1f}h)")
+                  f"Loss {results.best_loss:.4f} -> {results.final_loss:.4f} "
+                  f"({results.epochs_completed} epochs, {results.training_time/3600:.1f}h)")
         
         # Save final results
         results_file = self.logs_dir / "curriculum_results.json"
@@ -721,7 +700,7 @@ class CurriculumTrainer:
         return all_results
     
     def resume_from_checkpoint(self, checkpoint_path: str) -> bool:
-        """Resume training from checkpoint with stage detection"""
+        """Resume training from checkpoint"""
         try:
             self.model, checkpoint = load_model_checkpoint(checkpoint_path, str(self.device))
             
@@ -731,20 +710,8 @@ class CurriculumTrainer:
             
             self.global_step = checkpoint.get('step', 0)
             
-            # Restore stage information
-            self.current_stage_idx = checkpoint.get('current_stage_idx', 0)
-            self.completed_stages = checkpoint.get('completed_stages', [])
-            
-            # Restore stage results if available
-            saved_results = checkpoint.get('stage_results', [])
-            self.stage_results = []
-            for result_dict in saved_results:
-                self.stage_results.append(StageResults(**result_dict))
-            
             print(f"Resumed from checkpoint: {checkpoint_path}")
             print(f"  Global step: {self.global_step}")
-            print(f"  Current stage: {self.current_stage_idx + 1}")
-            print(f"  Completed stages: {self.completed_stages}")
             print(f"  Loss: {checkpoint.get('loss', 'unknown')}")
             
             return True
