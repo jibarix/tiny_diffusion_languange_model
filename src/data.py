@@ -416,10 +416,9 @@ class CompressedTokenizer:
         
         # Add MASK token next (position 1)
         special_tokens_ordered.append("[MASK]")
-        
-        # Add PAD token at position 2 (NOT 0!)
-        if self.base_tokenizer.pad_token and self.base_tokenizer.pad_token not in special_tokens_ordered:
-            special_tokens_ordered.append(self.base_tokenizer.pad_token)
+
+        # Add dedicated PAD token at position 2 (NOT same as EOS!)
+        special_tokens_ordered.append("[PAD]")  # Force dedicated PAD token
         
         # Add BOS if different from EOS
         if self.base_tokenizer.bos_token and self.base_tokenizer.bos_token not in special_tokens_ordered:

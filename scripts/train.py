@@ -281,6 +281,15 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
 
 def main():
     """Main training script entry point."""
+    import signal
+    def signal_handler(sig, frame):
+        print('\n Training interrupted by user')
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+
     parser = argparse.ArgumentParser(
         description='Tiny Diffusion Text Generation Training Script',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -319,7 +328,9 @@ Examples:
     parser.add_argument('--batch-size', type=int, help='Override batch size')
     parser.add_argument('--learning-rate', type=float, help='Override learning rate')
     parser.add_argument('--epochs', type=str, help='Override epochs per stage (e.g., "50,75,100")')
-    
+    parser.add_argument('--label-smoothing', type=float, help='Label smoothing factor')
+    parser.add_argument('--override', action='append', help='Override config value: key=value')
+
     # Output options
     parser.add_argument('--output-dir', type=str, default='outputs', help='Output directory')
     parser.add_argument('--no-eval', action='store_true', help='Skip evaluation after training')
@@ -365,9 +376,21 @@ Examples:
             if len(epoch_list) == 3:
                 for i, epochs in enumerate(epoch_list):
                     overrides[f'curriculum.stages[{i}].epochs'] = epochs
+        if args.label_smoothing:
+            overrides['training.label_smoothing'] = args.label_smoothing
         if args.output_dir:
             overrides['training.output_dir'] = args.output_dir
-        
+
+        # Handle generic overrides
+        if hasattr(args, 'override') and args.override:
+            for override_str in args.override:
+                key, value = override_str.split('=', 1)
+                try:
+                    value = float(value) if '.' in value else int(value)
+                except ValueError:
+                    pass  # Keep as string
+                overrides[key] = value
+
         if overrides:
             config = config.override(**overrides)
             logger.info(f"Applied overrides: {overrides}")

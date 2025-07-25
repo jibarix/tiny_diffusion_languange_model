@@ -19,6 +19,7 @@ import random
 from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, asdict
 import numpy as np
+import torch.nn.functional as F
 
 # Core dependencies
 import torch
@@ -162,8 +163,9 @@ class CurriculumTrainer:
         model_config = self.config['model'].copy()
         if self.data_pipeline.tokenizer:
             model_config['vocab_size'] = len(self.data_pipeline.tokenizer.compressed_vocab)
-            model_config['pad_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('[PAD]', 0)
             model_config['mask_token_id'] = self.data_pipeline.tokenizer.token_mapping.get('[MASK]', 1)
+            pad_token = self.data_pipeline.tokenizer.base_tokenizer.pad_token
+            model_config['pad_token_id'] = self.data_pipeline.tokenizer.token_mapping.get(pad_token, 2)
         
         model = create_model_from_config(model_config)
         model.to(self.device)
@@ -473,9 +475,18 @@ class CurriculumTrainer:
             # CRITICAL DEBUG: Verify loss masking is working correctly (both paths)
             if self.global_step % 100 == 0:
                 valid_tokens = (labels != -100).sum().item()
-                batch_tokens = labels.numel()  # Avoid variable name conflict
+                batch_tokens = labels.numel()
                 pad_token_id = self.config.get('model', {}).get('pad_token_id', 2)
-                pad_in_labels = (labels == pad_token_id).sum().item()
+                
+                # Safe pad token counting
+                if isinstance(labels, torch.Tensor) and labels.numel() > 0:
+                    pad_mask = (labels == pad_token_id)
+                    if isinstance(pad_mask, torch.Tensor):
+                        pad_in_labels = pad_mask.sum().item()
+                    else:
+                        pad_in_labels = int(pad_mask)  # Handle scalar case
+                else:
+                    pad_in_labels = 0
                 
                 print(f"DEBUG Step {self.global_step}:")
                 print(f"  Valid tokens for loss: {valid_tokens}/{batch_tokens} ({valid_tokens/batch_tokens:.1%})")
@@ -483,14 +494,13 @@ class CurriculumTrainer:
                 
                 # Check token distribution in predictions
                 with torch.no_grad():
-                    probs = F.softmax(outputs['logits'].view(-1, self.config['model']['vocab_size']), dim=-1)
+                    actual_vocab_size = outputs['logits'].size(-1)  # Get actual vocab size from logits
+                    probs = F.softmax(outputs['logits'].view(-1, actual_vocab_size), dim=-1)
                     top_tokens = torch.topk(probs.mean(dim=0), k=5)
                     print(f"  Top predicted tokens: {top_tokens.indices.tolist()}")
                     print(f"  Top predicted probs: {top_tokens.values.tolist()}")
             
-            if (labels == self.config.get('model', {}).get('pad_token_id', 2)).any():
-                logger.error(f"CRITICAL: Pad tokens found in labels - model will collapse!")
-                logger.error("Check tokenizer pad_token_id configuration immediately!")
+            pad_token_id = self.config.get('model', {}).get('pad_token_id', 2)
             
             # Scheduler step
             if self.scheduler is not None:
