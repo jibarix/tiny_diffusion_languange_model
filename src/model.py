@@ -498,11 +498,10 @@ class MaskedDiffusionLM(nn.Module):
             loss = None
             # --- LOSS CALCULATION (only in training) ---
             if labels is not None:
-                # --- BUG FIX: Corrected loss calculation ---
-                # The previous implementation with reduction='none' was incorrect.
-                # This simpler version correctly calculates the cross-entropy loss,
-                # ignoring the pad token, and then applies the per-token and per-sequence
-                # weighting as required by the MDLM objective.
+                # --- BUG FIX: Stabilized loss calculation ---
+                # The previous weighting scheme (1/t) was numerically unstable and caused
+                # the loss to explode. This version computes a simple, unweighted
+                # cross-entropy loss, which is far more stable for training.
                 loss_fct = CrossEntropyLoss(ignore_index=self.pad_token_id)
                 
                 # Calculate the loss only on the tokens that were actually masked
@@ -513,14 +512,8 @@ class MaskedDiffusionLM(nn.Module):
                 masked_labels = labels.view(-1)[loss_mask]
                 
                 if masked_labels.numel() > 0:
-                    # Calculate the base cross-entropy loss on the masked tokens
-                    ce_loss = loss_fct(masked_logits, masked_labels)
-                    
-                    # The MDLM objective requires a specific weighting.
-                    # We can approximate this by weighting the final loss.
-                    # For simplicity and stability, we'll use a batch-averaged weight.
-                    batch_avg_weight = weight.mean()
-                    loss = ce_loss * batch_avg_weight
+                    # Calculate a simple, unweighted cross-entropy loss
+                    loss = loss_fct(masked_logits, masked_labels)
                 else:
                     # If no tokens were masked in the batch, loss is 0
                     loss = torch.tensor(0.0, device=device, requires_grad=True)

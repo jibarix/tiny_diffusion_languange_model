@@ -141,9 +141,14 @@ class TextGenerator:
                 do_sample=config.do_sample,
             )
         
-        # Decode generated text
+        # --- FIX: Correctly extract the newly generated part of the text ---
+        # The old method used string slicing which is unreliable.
+        # This new method works at the token level for perfect extraction.
+        prompt_token_count = input_ids.shape[1]
+        new_token_ids = generated_ids[0, prompt_token_count:].tolist()
+        generated_text = self.tokenizer.decode(new_token_ids).strip()
         full_text = self.tokenizer.decode(generated_ids[0].tolist())
-        generated_text = full_text[len(prompt):].strip()
+        # --- END FIX ---
         
         generation_time = time.time() - start_time
         
