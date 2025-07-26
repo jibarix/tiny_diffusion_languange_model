@@ -121,7 +121,7 @@ class ProjectConfig:
             model=get_model_config(),
             training={
                 # Core optimization parameters (2025 research-validated)
-                'batch_size': 16,                    # Reduced from 32 for 8GB VRAM stability
+                'batch_size': 32,                    # Reduced from 32 for 8GB VRAM stability
                 'learning_rate': 1e-4,              # Reduced from 2e-4 for stable convergence
                 'weight_decay': 0.01,               # Reduced from 0.1 for less regularization
                 'warmup_steps': 1500,               # Increased from 1000 for better warmup
