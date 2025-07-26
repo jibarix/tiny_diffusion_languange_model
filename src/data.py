@@ -82,6 +82,11 @@ class DifficultyScorer:
         self.embedding_model = None
         self.idf_vectorizer = None
         self.reference_idf_scores = None
+
+        # --- NEW: Word Importance Scores for Soft-Masking ---
+        # This dictionary will store the calculated importance for each word in the vocabulary.
+        self.word_importance_scores: Optional[Dict[str, float]] = None
+        # --- END NEW ---
         
         self._setup_models()
     
@@ -103,6 +108,53 @@ class DifficultyScorer:
             max_features=50000,
             ngram_range=(1, 1)
         )
+
+    # --- NEW: Word Importance Calculation for Soft-Masking ---
+    # Implements the "soft-masking" strategy from the Masked-Diffuse LM paper.
+    # Importance is calculated as the sum of normalized TF-IDF and normalized entropy.
+    def compute_word_importance(self, corpus: List[str]) -> Dict[str, float]:
+        """
+        Calculate linguistic importance for each word in the vocabulary.
+        """
+        print("Calculating word importance scores for soft-masking...")
+
+        # 1. Calculate TF-IDF (reusing existing vectorizer)
+        self.idf_vectorizer.fit(corpus)
+        vocabulary = self.idf_vectorizer.vocabulary_
+        idf_scores_arr = self.idf_vectorizer.idf_
+        word_to_idf = {word: idf_scores_arr[idx] for word, idx in vocabulary.items()}
+
+        # Normalize IDF scores
+        max_idf = max(word_to_idf.values())
+        normalized_idf = {word: score / max_idf for word, score in word_to_idf.items()}
+
+        # 2. Calculate Entropy
+        # Get word counts
+        word_counts = Counter(" ".join(corpus).lower().split())
+        total_words = sum(word_counts.values())
+        
+        word_probs = {word: count / total_words for word, count in word_counts.items()}
+        word_entropy = {word: -p * np.log(p) for word, p in word_probs.items() if p > 0}
+
+        # Normalize Entropy
+        max_entropy = max(word_entropy.values()) if word_entropy else 1.0
+        normalized_entropy = {word: entropy / max_entropy for word, entropy in word_entropy.items()}
+
+        # 3. Combine scores
+        importance_scores = {}
+        all_words = set(normalized_idf.keys()) | set(normalized_entropy.keys())
+        for word in all_words:
+            idf = normalized_idf.get(word, 0)
+            entropy = normalized_entropy.get(word, 0)
+            importance_scores[word] = idf + entropy # As per formula I(w)
+
+        # Normalize final scores to be safe
+        max_importance = max(importance_scores.values()) if importance_scores else 1.0
+        self.word_importance_scores = {word: score / max_importance for word, score in importance_scores.items()}
+        
+        print(f"Computed importance for {len(self.word_importance_scores)} words.")
+        return self.word_importance_scores
+    # --- END NEW ---
     
     def compute_lexical_difficulty(self, segments: List[TextSegment], reference_corpus: Optional[List[str]] = None) -> List[float]:
         """
@@ -622,11 +674,15 @@ class CurriculumConstructor:
 class DiffusionDataset(Dataset):
     """PyTorch dataset for masked diffusion training"""
     
-    def __init__(self, segments: List[TextSegment], tokenizer: CompressedTokenizer, config: Dict[str, Any], stage_config: Dict[str, Any]):
+    # --- MODIFIED: Added word_importance_scores to init ---
+    # This allows the dataset to access the pre-computed scores for soft-masking.
+    def __init__(self, segments: List[TextSegment], tokenizer: CompressedTokenizer, config: Dict[str, Any], stage_config: Dict[str, Any], word_importance_scores: Optional[Dict[str, float]] = None):
         self.segments = segments
         self.tokenizer = tokenizer
         self.config = config
         self.stage_config = stage_config
+        self.word_importance_scores = word_importance_scores # Store the importance scores
+        # --- END MODIFIED ---
         
         self.sequence_length = config.get('data', {}).get('sequence_length', 512)
         self.masking_rate_range = stage_config.get('masking_rate_range', (0.15, 0.15))
@@ -712,62 +768,40 @@ class DiffusionDataset(Dataset):
         item = self.formatted_data[idx]
         input_ids = item['input_ids']
         
-        # Get vocab bounds for safe token IDs
-        vocab_size = len(self.tokenizer.compressed_vocab)
+        # --- MODIFIED: Change in data prep for new training objective ---
+        # The new MDLM objective handles masking internally.
+        # This dataset will now ONLY return the clean, padded token IDs.
+        # The original masking logic is preserved below but commented out,
+        # in case you need to revert. The soft-masking logic is also here.
         
         pad_token_id = self.tokenizer.token_mapping.get('[PAD]', 2)
+        vocab_size = len(self.tokenizer.compressed_vocab)
+        
+        # Create a clean version of input_ids for the new objective
+        clean_input_ids = input_ids.copy()
         
         # Pad to sequence length
-        if len(input_ids) < self.sequence_length:
-            input_ids = input_ids + [pad_token_id] * (self.sequence_length - len(input_ids))
+        if len(clean_input_ids) < self.sequence_length:
+            clean_input_ids = clean_input_ids + [pad_token_id] * (self.sequence_length - len(clean_input_ids))
         else:
-            input_ids = input_ids[:self.sequence_length]
-        
-        # Ensure all token IDs are within vocab bounds
-        input_ids = [min(max(0, tid), vocab_size - 1) for tid in input_ids]
-        
-        # Create attention mask (1 for real tokens, 0 for padding)
-        attention_mask = [1 if token_id != pad_token_id else 0 for token_id in input_ids]
-        
-        # Dynamic masking with proper bounds
-        min_mask, max_mask = self.masking_rate_range
-        base_masking_rate = random.uniform(min_mask, max_mask)
-        
-        # Apply dynamic difficulty adjustment if available
-        if hasattr(self, 'attention_difficulty'):
-            adaptive_masking_rate = base_masking_rate * self.attention_difficulty
-            adaptive_masking_rate = max(0.05, min(0.95, adaptive_masking_rate))
-        else:
-            adaptive_masking_rate = base_masking_rate
-        
-        # Create masked version - ONLY mask non-padded tokens
-        mask_token_id = self.tokenizer.token_mapping.get('[MASK]', 1)
-        eos_token_id = self.tokenizer.token_mapping.get('<|endoftext|>', 0)
-        special_token_ids = {mask_token_id, pad_token_id, eos_token_id}
+            clean_input_ids = clean_input_ids[:self.sequence_length]
 
-        masked_input_ids = input_ids.copy()
-        labels = [-100] * len(input_ids)  # -100 means ignore in loss
+        # Ensure all token IDs are within vocab bounds
+        clean_input_ids = [min(max(0, tid), vocab_size - 1) for tid in clean_input_ids]
+
+        # Create attention mask
+        attention_mask = [1 if token_id != pad_token_id else 0 for token_id in clean_input_ids]
         
-        for i in range(len(input_ids)):
-            # *** FIX: Do not create labels for special tokens ***
-            # This prevents the model from being trained to predict EOS, PAD, or MASK.
-            is_special_token = input_ids[i] in special_token_ids
-            
-            if attention_mask[i] == 1 and not is_special_token and random.random() < adaptive_masking_rate:
-                labels[i] = input_ids[i]  # Store original for loss
-                masked_input_ids[i] = mask_token_id  # Replace with mask
-        
-        # Verify no pad tokens in labels (they should all be -100)
-        pad_in_labels = sum(1 for label in labels if label == pad_token_id)
-        if pad_in_labels > 0:
-            print(f"WARNING: {pad_in_labels} pad tokens found in labels - this will bias training!")
-        
+        # The model's forward pass now expects clean_input_ids to create its own masks.
+        # The 'labels' are now the same as the clean_input_ids.
         return {
-            'input_ids': torch.tensor(masked_input_ids, dtype=torch.long),
+            'input_ids': torch.tensor(clean_input_ids, dtype=torch.long),
             'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
-            'labels': torch.tensor(labels, dtype=torch.long),
+            'labels': torch.tensor(clean_input_ids, dtype=torch.long), # Labels are the ground truth
             'original_text': item['text']
         }
+
+    # --- END MODIFIED ---
 
     def update_attention_difficulty(self, attention_entropy, difficulty_multiplier):
         """Update masking difficulty based on model's attention patterns"""
@@ -808,8 +842,9 @@ class DataPipeline:
         # 3. Create compressed tokenizer
         print("Creating compressed tokenizer...")
         self.tokenizer = CompressedTokenizer()
+        corpus_for_tokenizer = [seg.text for seg in self.segments]
         vocab_info = self.tokenizer.create_compressed_vocab(
-            [seg.text for seg in self.segments],
+            corpus_for_tokenizer,
             target_coverage=self.config.get('data', {}).get('vocab_compression_target', 0.9),
             max_vocab_size=self.config.get('model', {}).get('vocab_size', 25000)
         )
@@ -820,6 +855,13 @@ class DataPipeline:
         
         # 4. Score difficulty
         self.segments = self.difficulty_scorer.score_segments(self.segments)
+
+        # --- NEW: Compute and save word importance scores for soft-masking ---
+        self.difficulty_scorer.compute_word_importance(corpus_for_tokenizer)
+        importance_path = os.path.join(save_dir, "word_importance.pkl")
+        with open(importance_path, 'wb') as f:
+            pickle.dump(self.difficulty_scorer.word_importance_scores, f)
+        # --- END NEW ---
         
         # 5. Construct curriculum
         self.curriculum_datasets = self.curriculum_constructor.construct_curriculum(self.segments)
@@ -944,10 +986,23 @@ class DataPipeline:
         
         if not stage_config:
             raise ValueError(f"Configuration for stage '{stage_name}' not found")
-        
-        # Create datasets
-        train_dataset = DiffusionDataset(train_segments, self.tokenizer, self.config, stage_config)
-        val_dataset = DiffusionDataset(val_segments, self.tokenizer, self.config, stage_config)
+
+        # --- MODIFIED: Pass word importance scores to the Dataset ---
+        train_dataset = DiffusionDataset(
+            train_segments, 
+            self.tokenizer, 
+            self.config, 
+            stage_config, 
+            self.difficulty_scorer.word_importance_scores
+        )
+        val_dataset = DiffusionDataset(
+            val_segments, 
+            self.tokenizer, 
+            self.config, 
+            stage_config, 
+            self.difficulty_scorer.word_importance_scores
+        )
+        # --- END MODIFIED ---
         
         # Create dataloaders
         train_loader = DataLoader(
@@ -985,6 +1040,14 @@ class DataPipeline:
         with open(curriculum_path, 'rb') as f:
             pipeline.curriculum_datasets = pickle.load(f)
         
+        # --- NEW: Load word importance scores ---
+        importance_path = os.path.join(data_dir, "word_importance.pkl")
+        if os.path.exists(importance_path):
+            with open(importance_path, 'rb') as f:
+                pipeline.difficulty_scorer.word_importance_scores = pickle.load(f)
+                print("Loaded word importance scores for soft-masking.")
+        # --- END NEW ---
+
         # Load tokenizer
         tokenizer_path = os.path.join(data_dir, "compressed_tokenizer.json")
         pipeline.tokenizer = CompressedTokenizer.load(tokenizer_path)

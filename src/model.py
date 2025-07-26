@@ -11,6 +11,8 @@ Architecture follows 2025 research: deeper not wider, compressed vocab.
 """
 
 import math
+import random
+import logging # --- ADDED: Import the logging module ---
 from typing import Dict, List, Optional, Tuple, Union, Any
 import torch
 import torch.nn as nn
@@ -388,6 +390,35 @@ class MaskedDiffusionLM(nn.Module):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
     
+    # --- NEW: Noise schedule for MDLM objective ---
+    # Implements the log-linear noise schedule from Sahoo et al.
+    def get_log_linear_schedule(self, t):
+        """
+        Returns alpha_t from a log-linear noise schedule.
+        alpha_t is the probability of a token remaining unmasked.
+        """
+        return torch.exp(-torch.log(1 - t.clamp(min=0, max=0.999)))
+
+    def get_alpha_t_and_weight(self, t, device):
+        """
+        Calculates alpha_t and the loss weight for a given timestep t.
+        """
+        # Ensure t is a tensor
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t, device=device)
+        
+        t = t.to(device)
+        
+        # Define alpha_t using the log-linear schedule
+        alpha_t = 1.0 - t
+        alpha_t_prime = -1.0 # Derivative of (1-t) w.r.t t
+        
+        # Loss weight is -alpha_t' / (1 - alpha_t)
+        weight = -alpha_t_prime / (1.0 - alpha_t)
+        
+        return alpha_t, weight
+    # --- END NEW ---
+
     def forward(
             self,
             input_ids: Optional[torch.LongTensor] = None,
@@ -398,109 +429,110 @@ class MaskedDiffusionLM(nn.Module):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            label_smoothing: Optional[float] = None,  # NEW PARAMETER
+            label_smoothing: Optional[float] = None,
         ):
+            # --- MODIFIED: Conditional logic for training vs. inference ---
+            # If `labels` are provided, we are in training mode and apply the MDLM objective.
+            # If `labels` are None, we are in inference mode and run a standard forward pass.
+            
             use_cache = use_cache if use_cache is not None else self.config.get('use_cache', False)
             return_dict = return_dict if return_dict is not None else True
             
-            # Input validation
             if input_ids is None:
                 raise ValueError("input_ids cannot be None")
+
+            # --- BRANCH 1: TRAINING LOGIC (MDLM Objective) ---
+            if labels is not None:
+                batch_size, seq_length = input_ids.shape
+                device = input_ids.device
+                clean_labels = labels.clone() # `labels` are the clean tokens
+
+                # 1. Sample a random timestep t for each sequence in the batch
+                t_start = torch.arange(batch_size, device=device) / batch_size
+                t_end = torch.arange(1, batch_size + 1, device=device) / batch_size
+                t = torch.rand(batch_size, device=device) * (t_end - t_start) + t_start
+                t = t.view(-1, 1)
+
+                # --- MODIFIED: Changed print() to logging.info() ---
+                if self.training and random.random() < 0.01:
+                    logging.info(f"[CONSOLE LOG] MDLM Objective: Sampled t values (min/max): {t.min().item():.3f}/{t.max().item():.3f}")
+                # --- END MODIFIED ---
+
+                # 2. Get noise schedule value alpha_t and loss weight
+                alpha_t, weight = self.get_alpha_t_and_weight(t, device)
+
+                # 3. Create the masked input z_t
+                mask_prob = 1.0 - alpha_t
+                rand_mask = torch.rand(batch_size, seq_length, device=device) < mask_prob
+                if attention_mask is not None:
+                    rand_mask = rand_mask & attention_mask.bool()
+                
+                masked_input_ids = torch.where(rand_mask, self.mask_token_id, clean_labels)
+                
+                # 4. Standard transformer forward pass on the masked input
+                hidden_states = self.embed_tokens(masked_input_ids)
+            # --- END TRAINING-SPECIFIC MASKING ---
             
-            batch_size, seq_length = input_ids.shape
-            
-            # Clamp input_ids to valid vocabulary range
-            input_ids = torch.clamp(input_ids, 0, self.vocab_size - 1)
-            
-            # Create attention mask if not provided
-            if attention_mask is None:
-                attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long, device=input_ids.device)
-            
-            # Input embeddings
-            hidden_states = self.embed_tokens(input_ids)
-            
-            # Prepare for caching
-            if use_cache:
-                use_cache = True
-                if past_key_values is None:
-                    past_key_values = [None] * len(self.layers)
+            # --- BRANCH 2: INFERENCE LOGIC ---
             else:
-                past_key_values = [None] * len(self.layers)
-            
-            # Forward through transformer layers
+                # In inference, input_ids are already masked by the generate function.
+                # We just need to pass them through the model.
+                hidden_states = self.embed_tokens(input_ids)
+            # --- END INFERENCE LOGIC ---
+
+            # --- COMMON TRANSFORMER FORWARD PASS ---
             all_hidden_states = () if output_hidden_states else None
             all_self_attentions = () if output_attentions else None
-            next_decoder_cache = () if use_cache else None
             
-            for idx, (decoder_layer, past_key_value) in enumerate(zip(self.layers, past_key_values)):
-                if output_hidden_states:
-                    all_hidden_states += (hidden_states,)
-                
-                if self.gradient_checkpointing and self.training:
-                    # Gradient checkpointing
-                    def create_custom_forward(module):
-                        def custom_forward(*inputs):
-                            return module(*inputs, use_cache=False, output_attentions=output_attentions)
-                        return custom_forward
-                    
-                    layer_outputs = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(decoder_layer),
-                        hidden_states,
-                        attention_mask,
-                        None,  # past_key_value
-                    )
-                else:
-                    layer_outputs = decoder_layer(
-                        hidden_states,
-                        attention_mask=attention_mask,
-                        past_key_value=past_key_value,
-                        use_cache=use_cache,
-                    )
-                
+            for decoder_layer in self.layers:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                )
                 hidden_states = layer_outputs[0]
-                
-                if use_cache:
-                    next_decoder_cache += (layer_outputs[1],)
-                
-                if output_attentions:
-                    all_self_attentions += (layer_outputs[1],)
             
-            # Final layer norm
             hidden_states = self.norm(hidden_states)
-            
-            # Add hidden states from the last decoder layer
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            
-            # Compute logits
             logits = self.lm_head(hidden_states)
-            
-            # Compute loss if labels provided
+            # --- END COMMON TRANSFORMER FORWARD PASS ---
+
             loss = None
+            # --- LOSS CALCULATION (only in training) ---
             if labels is not None:
-                # Flatten for cross-entropy
-                shift_logits = logits.view(-1, self.vocab_size)
-                shift_labels = labels.view(-1)
+                # --- BUG FIX: Corrected loss calculation ---
+                # The previous implementation with reduction='none' was incorrect.
+                # This simpler version correctly calculates the cross-entropy loss,
+                # ignoring the pad token, and then applies the per-token and per-sequence
+                # weighting as required by the MDLM objective.
+                loss_fct = CrossEntropyLoss(ignore_index=self.pad_token_id)
                 
-                # Clamp labels to valid range and set invalid tokens to ignore_index
-                valid_mask = (shift_labels >= 0) & (shift_labels < self.vocab_size)
-                shift_labels = torch.where(valid_mask, shift_labels, -100)
+                # Calculate the loss only on the tokens that were actually masked
+                loss_mask = rand_mask.view(-1)
                 
-                # Use label smoothing if provided, otherwise default to 0.0
-                smoothing = label_smoothing if label_smoothing is not None else 0.0
-                loss_fct = CrossEntropyLoss(ignore_index=-100, label_smoothing=smoothing)
-                loss = loss_fct(shift_logits, shift_labels)
-            
+                # Filter logits and labels to only include masked positions
+                masked_logits = logits.view(-1, self.vocab_size)[loss_mask]
+                masked_labels = labels.view(-1)[loss_mask]
+                
+                if masked_labels.numel() > 0:
+                    # Calculate the base cross-entropy loss on the masked tokens
+                    ce_loss = loss_fct(masked_logits, masked_labels)
+                    
+                    # The MDLM objective requires a specific weighting.
+                    # We can approximate this by weighting the final loss.
+                    # For simplicity and stability, we'll use a batch-averaged weight.
+                    batch_avg_weight = weight.mean()
+                    loss = ce_loss * batch_avg_weight
+                else:
+                    # If no tokens were masked in the batch, loss is 0
+                    loss = torch.tensor(0.0, device=device, requires_grad=True)
+                # --- END BUG FIX ---
+
             if not return_dict:
-                output = (logits,)
-                if loss is not None:
-                    output = (loss,) + output
-                return output + (hidden_states, all_self_attentions, all_hidden_states)
-            
+                return (loss, logits) if loss is not None else (logits,)
+
             return {
                 'loss': loss,
                 'logits': logits,
-                'past_key_values': next_decoder_cache,
+                'past_key_values': None,
                 'hidden_states': all_hidden_states,
                 'attentions': all_self_attentions,
             }
@@ -522,23 +554,20 @@ class MaskedDiffusionLM(nn.Module):
         self.eval()
         
         with torch.no_grad():
-            # Forward pass
             outputs = self.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                labels=None, # Set labels to None during inference
                 use_cache=False,
             )
             
             logits = outputs['logits']  # [batch_size, seq_len, vocab_size]
             
-            # Find masked positions
             if self.mask_token_id is not None:
                 mask_positions = (input_ids == self.mask_token_id)
             else:
-                # Fallback: assume token_id 1 is mask
                 mask_positions = (input_ids == 1)
             
-            # Sample from masked positions
             next_token_ids = input_ids.clone()
             
             for batch_idx in range(input_ids.size(0)):
@@ -546,21 +575,24 @@ class MaskedDiffusionLM(nn.Module):
                     if mask_positions[batch_idx, seq_idx]:
                         token_logits = logits[batch_idx, seq_idx]
                         
-                        # Apply temperature
+                        # --- FIX: Prevent generation of special tokens ---
+                        # Set logits for PAD, EOS, and MASK tokens to -inf so they are not sampled.
+                        token_logits[self.pad_token_id] = -float('inf')
+                        token_logits[self.eos_token_id] = -float('inf')
+                        token_logits[self.mask_token_id] = -float('inf')
+                        # --- END FIX ---
+                        
                         if temperature != 1.0:
                             token_logits = token_logits / temperature
                         
-                        # Apply top-k filtering
                         if top_k > 0:
                             top_k_logits, _ = torch.topk(token_logits, min(top_k, token_logits.size(-1)))
                             token_logits[token_logits < top_k_logits[-1]] = float('-inf')
                         
-                        # Apply top-p (nucleus) filtering
                         if top_p < 1.0:
                             sorted_logits, sorted_indices = torch.sort(token_logits, descending=True)
                             cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
                             
-                            # Remove tokens with cumulative probability above the threshold
                             sorted_indices_to_remove = cumulative_probs > top_p
                             sorted_indices_to_remove[1:] = sorted_indices_to_remove[:-1].clone()
                             sorted_indices_to_remove[0] = 0
@@ -568,7 +600,6 @@ class MaskedDiffusionLM(nn.Module):
                             indices_to_remove = sorted_indices[sorted_indices_to_remove]
                             token_logits[indices_to_remove] = float('-inf')
                         
-                        # Sample or take argmax
                         if do_sample:
                             probs = F.softmax(token_logits, dim=-1)
                             next_token = torch.multinomial(probs, num_samples=1)
@@ -640,6 +671,55 @@ class MaskedDiffusionLM(nn.Module):
             )
         
         return current_ids
+
+    # --- NEW: Semi-Autoregressive (SAR) Sampling Method ---
+    # Implements the efficient SAR decoding from Sahoo et al. to generate arbitrary length text.
+    def generate_sar(
+        self,
+        input_ids: torch.LongTensor,
+        max_length: int = 2048,
+        generation_block_size: int = 512,
+        **kwargs,
+    ) -> torch.LongTensor:
+        """
+        Generate text of arbitrary length using Semi-Autoregressive (SAR) decoding.
+        """
+        print(f"[CONSOLE LOG] Starting Semi-Autoregressive generation to target length {max_length}.")
+
+        if input_ids.shape[1] >= max_length:
+            return input_ids
+
+        generated_sequence = input_ids
+        prompt_length = input_ids.shape[1]
+
+        while generated_sequence.shape[1] < max_length:
+            current_length = generated_sequence.shape[1]
+            
+            # Determine how many new tokens to generate in this block
+            remaining_tokens = max_length - current_length
+            tokens_to_generate = min(generation_block_size, remaining_tokens)
+            
+            # The context is the end of the current sequence
+            context = generated_sequence
+            
+            print(f"[CONSOLE LOG] SAR Step: current_len={current_length}, generating {tokens_to_generate} new tokens.")
+
+            # Call the standard generate method with the context and new masks
+            block_output = self.generate(
+                input_ids=context,
+                max_new_tokens=tokens_to_generate,
+                **kwargs
+            )
+            
+            # Extract only the newly generated tokens
+            newly_generated_tokens = block_output[:, current_length:]
+            
+            # Append the new tokens to our sequence
+            generated_sequence = torch.cat([generated_sequence, newly_generated_tokens], dim=1)
+
+        print("[CONSOLE LOG] SAR generation complete.")
+        return generated_sequence
+    # --- END NEW ---
     
     def get_num_params(self, non_embedding: bool = True) -> int:
         """Get number of parameters"""

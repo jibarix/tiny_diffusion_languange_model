@@ -358,9 +358,8 @@ class CurriculumTrainer:
         """Evaluate model on validation set"""
         self.model.eval()
         total_loss = 0.0
-        total_tokens = 0
+        total_samples = 0
         
-        # Get label smoothing for consistent evaluation
         label_smoothing = self.training_config.get('label_smoothing', 0.0)
         
         with torch.no_grad():
@@ -368,34 +367,25 @@ class CurriculumTrainer:
                 # Move to device
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['labels'].to(self.device)
                 
-                # Forward pass
-                if self.scaler is not None:
-                    with autocast():
-                        outputs = self.model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels,
-                            label_smoothing=label_smoothing
-                        )
-                        loss = outputs['loss']
-                else:
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
-                        label_smoothing=label_smoothing
-                    )
-                    loss = outputs['loss']
+                # --- MODIFIED: Pass clean inputs to both input_ids and labels ---
+                # The model's forward pass now handles its own masking.
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=input_ids, # Labels are the clean tokens
+                    label_smoothing=label_smoothing
+                )
+                # --- END MODIFIED ---
+                
+                loss = outputs['loss']
                 
                 # Accumulate metrics
-                num_tokens = (labels != -100).sum().item()
-                total_loss += loss.item() * num_tokens
-                total_tokens += num_tokens
+                total_loss += loss.item() * input_ids.size(0)
+                total_samples += input_ids.size(0)
         
-        avg_loss = total_loss / max(total_tokens, 1)
-        perplexity = math.exp(avg_loss)
+        avg_loss = total_loss / max(total_samples, 1)
+        perplexity = math.exp(avg_loss) if avg_loss < 10 else float('inf')
         
         self.model.train()
         return avg_loss, perplexity
@@ -404,154 +394,82 @@ class CurriculumTrainer:
         """Train for one epoch with dynamic masking and real-time difficulty adjustment"""
         self.model.train()
         total_loss = 0.0
-        total_tokens = 0
+        total_samples = 0
         epoch_start_time = time.time()
         
-        # Progress bar
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
         
         for batch_idx, batch in enumerate(pbar):
             step_start_time = time.time()
             
-            # Move to device
             input_ids = batch['input_ids'].to(self.device, non_blocking=True)
             attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
-            labels = batch['labels'].to(self.device, non_blocking=True)
             
-            # Zero gradients
             self.optimizer.zero_grad()
             
-            # Forward pass with mixed precision
+            # --- MODIFIED: Forward pass for new MDLM objective ---
+            # The model's forward pass now takes clean input_ids and handles its own masking.
+            # We pass input_ids to both `input_ids` and `labels`.
             if self.scaler is not None:
                 with autocast():
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=labels,
-                        output_attentions=True  # Need attentions for dynamic masking
+                        labels=input_ids, # Ground truth is the clean sequence
+                        output_attentions=True
                     )
                     loss = outputs['loss']
                 
-                # Backward pass
                 self.scaler.scale(loss).backward()
-                
-                # Gradient clipping
                 if self.training_config.get('gradient_clipping', 0) > 0:
                     self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.training_config['gradient_clipping']
-                    )
+                        self.model.parameters(), self.training_config['gradient_clipping'])
                 else:
                     grad_norm = 0.0
-                
-                # Optimizer step
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    labels=labels,
+                    labels=input_ids, # Ground truth is the clean sequence
                     output_attentions=True
                 )
                 loss = outputs['loss']
-                
-                # Backward pass
                 loss.backward()
-                
-                # Gradient clipping
                 if self.training_config.get('gradient_clipping', 0) > 0:
                     grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.training_config['gradient_clipping']
-                    )
+                        self.model.parameters(), self.training_config['gradient_clipping'])
                 else:
                     grad_norm = 0.0
-                
-                # Optimizer step
                 self.optimizer.step()
+            # --- END MODIFIED ---
             
-            # CRITICAL DEBUG: Verify loss masking is working correctly (both paths)
-            if self.global_step % 100 == 0:
-                valid_tokens = (labels != -100).sum().item()
-                batch_tokens = labels.numel()
-                pad_token_id = self.config.get('model', {}).get('pad_token_id', 2)
-                
-                # Safe pad token counting
-                if isinstance(labels, torch.Tensor) and labels.numel() > 0:
-                    pad_mask = (labels == pad_token_id)
-                    if isinstance(pad_mask, torch.Tensor):
-                        pad_in_labels = pad_mask.sum().item()
-                    else:
-                        pad_in_labels = int(pad_mask)  # Handle scalar case
-                else:
-                    pad_in_labels = 0
-                
-                print(f"DEBUG Step {self.global_step}:")
-                print(f"  Valid tokens for loss: {valid_tokens}/{batch_tokens} ({valid_tokens/batch_tokens:.1%})")
-                print(f"  Pad tokens in labels: {pad_in_labels} (should be 0!)")
-                
-                # Check token distribution in predictions
-                with torch.no_grad():
-                    actual_vocab_size = outputs['logits'].size(-1)  # Get actual vocab size from logits
-                    probs = F.softmax(outputs['logits'].view(-1, actual_vocab_size), dim=-1)
-                    top_tokens = torch.topk(probs.mean(dim=0), k=5)
-                    print(f"  Top predicted tokens: {top_tokens.indices.tolist()}")
-                    print(f"  Top predicted probs: {top_tokens.values.tolist()}")
-            
-            pad_token_id = self.config.get('model', {}).get('pad_token_id', 2)
-            
-            # Scheduler step
             if self.scheduler is not None:
                 self.scheduler.step()
             
-            # === MODIFICATION 1: Real-time Difficulty Adjustment ===
-            if self.global_step > 100:  # Allow warmup
-                target_loss = self.stage_target_losses.get(self.current_stage_idx, loss.item())
-                if loss.item() < target_loss * 0.8:
-                    self.difficulty_multiplier = min(1.5, self.difficulty_multiplier + 0.02)
-                elif loss.item() > target_loss * 1.2:
-                    self.difficulty_multiplier = max(0.5, self.difficulty_multiplier - 0.02)
-            
-            # === MODIFICATION 2: Dynamic Masking Based on Attention ===
-            if outputs.get('attentions') is not None and hasattr(train_loader.dataset, 'update_attention_difficulty'):
-                attention_entropy = self._calculate_attention_entropy(outputs['attentions'])
-                train_loader.dataset.update_attention_difficulty(attention_entropy, self.difficulty_multiplier)
-            
-            # Calculate metrics
             step_end_time = time.time()
             step_duration = step_end_time - step_start_time
             
-            num_tokens = (labels != -100).sum().item()
             batch_size = input_ids.size(0)
             seq_length = input_ids.size(1)
             tokens_per_second = (batch_size * seq_length) / step_duration
             
-            # Get current masking rate (approximate from batch)
-            mask_token_id = self.config['model'].get('mask_token_id', 1)
-            if mask_token_id is not None:
-                num_masked = (input_ids == mask_token_id).sum().item()
-                masking_rate = num_masked / (batch_size * seq_length)
-            else:
-                min_mask, max_mask = self.current_stage['masking_rate_range']
-                masking_rate = (min_mask + max_mask) / 2 * self.difficulty_multiplier
-            
-            # Memory usage
             if self.device.type == 'cuda':
                 memory_allocated = torch.cuda.memory_allocated(self.device) / 1e9
             else:
                 memory_allocated = 0.0
             
-            # Log metrics
+            # For logging, masking rate is now an average value, as it's random per-batch.
             metrics = TrainingMetrics(
                 epoch=epoch,
                 step=self.global_step,
                 stage=self.current_stage['name'],
                 loss=loss.item(),
-                perplexity=math.exp(loss.item()),
+                perplexity=math.exp(loss.item()) if loss.item() < 10 else float('inf'),
                 learning_rate=self.optimizer.param_groups[0]['lr'],
-                masking_rate=masking_rate,
+                masking_rate=0.5, # Avg mask rate for MDLM is 50%
                 grad_norm=float(grad_norm) if grad_norm > 0 else 0.0,
                 throughput_tokens_per_sec=tokens_per_second,
                 memory_allocated_gb=memory_allocated,
@@ -560,48 +478,20 @@ class CurriculumTrainer:
             
             self._log_metrics(metrics)
             
-            # Update progress bar with difficulty info
             pbar.set_postfix({
                 'loss': f"{loss.item():.4f}",
-                'ppl': f"{math.exp(loss.item()):.2f}",
+                'ppl': f"{math.exp(loss.item()):.2f}" if loss.item() < 10 else "inf",
                 'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}",
-                'diff': f"{self.difficulty_multiplier:.2f}",  # Show difficulty multiplier
                 'mem': f"{memory_allocated:.1f}GB"
             })
             
-            # Accumulate for epoch averages
-            total_loss += loss.item() * num_tokens
-            total_tokens += num_tokens
-            self.tokens_processed += num_tokens
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+            self.tokens_processed += (attention_mask.sum().item())
             self.global_step += 1
-            
-            # Periodic evaluation
-            eval_every = self.training_config.get('eval_every', 5)
-            eval_interval = max(1, eval_every * len(train_loader) // 10) if len(train_loader) > 0 else 1
-            if self.global_step % eval_interval == 0:
-                val_loss, val_perplexity = self._evaluate_stage(val_loader)
-                print(f"\nValidation - Loss: {val_loss:.4f}, Perplexity: {val_perplexity:.2f}")
-                
-                # Update target loss for difficulty adjustment
-                if self.current_stage_idx not in self.stage_target_losses:
-                    self.stage_target_losses[self.current_stage_idx] = val_loss
-                else:
-                    # Exponential moving average
-                    self.stage_target_losses[self.current_stage_idx] = (
-                        0.9 * self.stage_target_losses[self.current_stage_idx] + 
-                        0.1 * val_loss
-                    )
-                
-                if self.use_wandb:
-                    wandb.log({
-                        'val_loss': val_loss,
-                        'val_perplexity': val_perplexity,
-                        'difficulty_multiplier': self.difficulty_multiplier,
-                    }, step=self.global_step)
         
-        # Calculate epoch averages
-        avg_loss = total_loss / max(total_tokens, 1)
-        avg_perplexity = math.exp(avg_loss)
+        avg_loss = total_loss / max(total_samples, 1)
+        avg_perplexity = math.exp(avg_loss) if avg_loss < 10 else float('inf')
         
         return avg_loss, avg_perplexity
 
