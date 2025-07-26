@@ -117,6 +117,10 @@ class ProjectConfig:
         from .model import get_model_config
         from .curriculum import get_curriculum_config
         
+        # Get curriculum config to calculate total epochs
+        curriculum_config = get_curriculum_config()
+        total_epochs = sum(stage['epochs'] for stage in curriculum_config['stages'])
+        
         # --- MODIFICATION FOR CONTINUED TRAINING ---
         # Get the base model config and apply the fixed masking rate.
         model_config = get_model_config()
@@ -127,7 +131,7 @@ class ProjectConfig:
             training={
                 # Core optimization parameters (2025 research-validated)
                 'batch_size': 32,
-                'learning_rate': 1e-5,              # MODIFIED: Reduced for fine-tuning
+                'learning_rate': 1e-5,
                 'weight_decay': 0.01,
                 'warmup_steps': 1500,
                 'gradient_clipping': 1.0,
@@ -141,12 +145,12 @@ class ProjectConfig:
                 'gradient_checkpointing': True,
                 
                 # Training control
-                'max_epochs': 525, # Sum of curriculum epochs
+                'max_epochs': total_epochs, # Calculated from curriculum epochs
                 'save_every': 10,
                 'eval_every': 5,
                 'early_stopping_patience': 30, # MODIFIED: Increased for longer convergence
             },
-            curriculum=get_curriculum_config(),
+            curriculum=curriculum_config,
             data={
                 'sequence_length': 512,
                 'min_sentence_length': 10,
@@ -178,37 +182,32 @@ class ProjectConfig:
         """Create debug configuration for fast testing"""
         config = cls.default()
         
-        # Tiny model for debugging
-        config.model.update({
-            'd_model': 128,
-            'n_layers': 3,
-            'n_heads': 4,
-            'vocab_size': 5000,
-        })
-
-        # Recalculate head_dim after changing d_model and n_heads
-        config.model['head_dim'] = config.model['d_model'] // config.model['n_heads']
+        # Use full model (remove tiny model overrides)
+        # config.model remains default: 768d/12L/12H/25k vocab
+        
+        # Minimal curriculum
+        config.curriculum['stages'][0]['epochs'] = 1
+        config.curriculum['stages'][1]['epochs'] = 2
+        config.curriculum['stages'][2]['epochs'] = 3
+        
+        # Calculate total epochs from curriculum
+        total_epochs = sum(stage['epochs'] for stage in config.curriculum['stages'])
         
         # Fast training with optimized parameters
         config.training.update({
-            'batch_size': 4,
-            'learning_rate': 1e-4,
+            'batch_size': 32,
+            'learning_rate': 1e-5,
             'label_smoothing': 0.1,
             'gradient_accumulation_steps': 2,
-            'max_epochs': 3,
+            'max_epochs': total_epochs,  # Calculated
             'save_every': 1,
             'eval_every': 1,
         })
         
-        # Minimal curriculum
-        config.curriculum['stages'][0]['epochs'] = 1
-        config.curriculum['stages'][1]['epochs'] = 1  
-        config.curriculum['stages'][2]['epochs'] = 1
-        
-        # Small data
+        # Small data for speed
         config.data.update({
-            'sequence_length': 128,
-            'validation_split': 0.2,
+            'sequence_length': 512,
+            'validation_split': 0.1,
         })
         
         # Keep optimized generation parameters

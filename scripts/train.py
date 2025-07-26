@@ -158,13 +158,15 @@ def test_integration():
         return False
 
 
-def prepare_data(book_path: str, config: Dict[str, Any]) -> DataPipeline:
+# --- MODIFICATION: Added debug_mode flag to prepare_data ---
+def prepare_data(book_path: str, config: Dict[str, Any], debug_mode: bool = False) -> DataPipeline:
     """
     Prepare training data with curriculum learning.
     
     Args:
         book_path: Path to the source text file
         config: Training configuration
+        debug_mode: Flag to isolate debug outputs
         
     Returns:
         Configured DataPipeline ready for training
@@ -175,8 +177,8 @@ def prepare_data(book_path: str, config: Dict[str, Any]) -> DataPipeline:
     if not Path(book_path).exists():
         raise FileNotFoundError(f"Book file not found: {book_path}")
     
-    # Create data pipeline
-    pipeline = DataPipeline(config)
+    # Create data pipeline, passing the debug_mode flag
+    pipeline = DataPipeline(config, debug_mode=debug_mode)
     
     # Process the book (this does loading, segmentation, scoring, curriculum construction)
     logger.info("Processing book with curriculum construction...")
@@ -392,7 +394,8 @@ Examples:
         
         # Prepare data (unless resuming)
         if args.book:
-            data_pipeline = prepare_data(args.book, config_dict)
+            # --- MODIFICATION: Pass the debug_mode flag to prepare_data ---
+            data_pipeline = prepare_data(args.book, config_dict, debug_mode=args.debug)
         else:
             # For resume-only, create minimal pipeline
             # In practice, you'd want to save/load the pipeline state

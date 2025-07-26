@@ -38,7 +38,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         CurriculumStage(
             name="foundational",
             epochs=75,
-            masking_rate_range=(0.75, 0.90),
+            masking_rate_range=(0.13, 0.17),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_33_percent',
                 'lexical_rarity': 'bottom_33_percent',
@@ -56,7 +56,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         CurriculumStage(
             name="structural",
             epochs=150,
-            masking_rate_range=(0.40, 0.60),
+            masking_rate_range=(0.10, 0.14),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_66_percent',
                 'lexical_rarity': 'bottom_66_percent',
@@ -73,7 +73,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         CurriculumStage(
             name="refinement", 
             epochs=300,
-            masking_rate_range=(0.05, 0.20),
+            masking_rate_range=(0.08, 0.12),
             data_selection_criteria={
                 'use_full_corpus': True,
                 'include_outliers': True,

@@ -810,8 +810,10 @@ class DiffusionDataset(Dataset):
 class DataPipeline:
     """Complete data processing pipeline"""
     
-    def __init__(self, config: Dict[str, Any]):
+    # --- MODIFICATION: Add debug_mode flag to __init__ ---
+    def __init__(self, config: Dict[str, Any], debug_mode: bool = False):
         self.config = config
+        self.debug_mode = debug_mode # Store the debug mode flag
         
         # Initialize components
         self.preprocessor = TextPreprocessor(config)
@@ -828,6 +830,12 @@ class DataPipeline:
         """
         Complete pipeline: load book -> segment -> score -> construct curriculum.
         """
+        # --- MODIFICATION: Isolate debug outputs ---
+        if self.debug_mode:
+            save_dir = os.path.join(save_dir, "debug")
+            print(f"--- DEBUG MODE: All data outputs will be saved to {save_dir} ---")
+        # --- END MODIFICATION ---
+
         os.makedirs(save_dir, exist_ok=True)
         
         print(f"Processing book: {book_path}")
@@ -1023,12 +1031,18 @@ class DataPipeline:
         
         return train_loader, val_loader
     
+    # --- MODIFICATION: Add debug_mode flag and logic to load_processed_data ---
     @classmethod
-    def load_processed_data(cls, config: Dict[str, Any], data_dir: str = "data/processed") -> 'DataPipeline':
+    def load_processed_data(cls, config: Dict[str, Any], data_dir: str = "data/processed", debug_mode: bool = False) -> 'DataPipeline':
         """
         Load previously processed data.
         """
-        pipeline = cls(config)
+        # Adjust data_dir for debug mode
+        if debug_mode:
+            data_dir = os.path.join(data_dir, "debug")
+            print(f"--- DEBUG MODE: Loading processed data from {data_dir} ---")
+
+        pipeline = cls(config, debug_mode=debug_mode)
         
         # Load segments
         segments_path = os.path.join(data_dir, "segments.pkl")
@@ -1114,6 +1128,7 @@ class DataPipeline:
         return samples
 
 
+# --- MODIFICATION: Pass debug_mode flag to the pipeline ---
 def create_debug_data_pipeline(config: Dict[str, Any], debug_text: str = None) -> DataPipeline:
     """
     Create a minimal data pipeline for debugging/testing.
@@ -1138,9 +1153,10 @@ def create_debug_data_pipeline(config: Dict[str, Any], debug_text: str = None) -
         temp_path = f.name
     
     try:
-        # Process the debug text
-        pipeline = DataPipeline(config)
-        pipeline.process_book(temp_path, save_dir="data/debug")
+        # Process the debug text with debug_mode=True
+        pipeline = DataPipeline(config, debug_mode=True)
+        # The process_book method will now automatically use the 'data/processed/debug' directory
+        pipeline.process_book(temp_path, save_dir="data/processed")
         
         # Fix curriculum distribution to ensure all stages have samples
         _fix_debug_curriculum_distribution(pipeline)
