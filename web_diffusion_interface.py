@@ -394,6 +394,14 @@ HTML_TEMPLATE = '''
             border-radius: 5px;
             color: #e8e8e8;
         }
+        /* --- NEW: Style for parameter descriptions --- */
+        .setting-description {
+            font-size: 0.8em;
+            color: #999;
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+        /* --- END NEW --- */
         .output-section {
             background: rgba(0,0,0,0.4);
             padding: 30px;
@@ -555,22 +563,28 @@ HTML_TEMPLATE = '''
             </div>
 
             <div class="settings-panel">
+                <!-- --- MODIFIED: Added descriptions for each parameter --- -->
                 <div class="setting-group">
                     <label class="setting-label">Max Tokens</label>
                     <input type="number" class="setting-input" id="maxTokens" value="40" min="10" max="200">
+                    <p class="setting-description">Max length of the generated text. Typical: 20-200.</p>
                 </div>
                 <div class="setting-group">
                     <label class="setting-label">Diffusion Steps</label>
                     <input type="number" class="setting-input" id="steps" value="15" min="5" max="50">
+                    <p class="setting-description">More steps = higher quality, slower generation. Range: 10-50. Below 5 may be incoherent.</p>
                 </div>
                 <div class="setting-group">
                     <label class="setting-label">Temperature</label>
                     <input type="number" class="setting-input" id="temperature" value="0.6" min="0.1" max="2.0" step="0.1">
+                    <p class="setting-description">Controls randomness. >1.0 is creative but risky, <0.5 is safe but repetitive. Typical: 0.6-1.0.</p>
                 </div>
                 <div class="setting-group">
                     <label class="setting-label">Top-K</label>
                     <input type="number" class="setting-input" id="topK" value="20" min="1" max="100">
+                    <p class="setting-description">Restricts sampling to the K most likely words. Lower is safer. Typical: 20-100.</p>
                 </div>
+                <!-- --- END MODIFIED --- -->
             </div>
         </div>
 
