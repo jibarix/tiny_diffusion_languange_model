@@ -66,9 +66,9 @@ def get_model_config() -> Dict[str, Any]:
     """
     config = {
         # Core architecture
-        'd_model': 768,
-        'n_layers': 12,
-        'n_heads': 12,
+        'd_model': 256,
+        'n_layers': 6,
+        'n_heads': 8,
         'vocab_size': 25000,  # Compressed from 50k GPT-2 vocab
         'max_position_embeddings': 2048,
         

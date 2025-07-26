@@ -37,7 +37,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         # Stage I: Foundational Learning
         CurriculumStage(
             name="foundational",
-            epochs=75,  # Restored from 50
+            epochs=75,
             masking_rate_range=(0.75, 0.90),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_33_percent',
@@ -55,7 +55,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         # Stage II: Structural Learning
         CurriculumStage(
             name="structural",
-            epochs=150,  # Restored from 75
+            epochs=150,
             masking_rate_range=(0.40, 0.60),
             data_selection_criteria={
                 'syntactic_complexity': 'bottom_66_percent',
@@ -72,7 +72,7 @@ def get_curriculum_config() -> Dict[str, Any]:
         # Stage III: Refinement
         CurriculumStage(
             name="refinement", 
-            epochs=300,  # Restored from 100
+            epochs=300,
             masking_rate_range=(0.05, 0.20),
             data_selection_criteria={
                 'use_full_corpus': True,

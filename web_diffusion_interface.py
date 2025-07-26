@@ -558,7 +558,7 @@ HTML_TEMPLATE = '''
                     Prompt: <span id="currentPrompt"></span>
                 </div>
                 <input type="text" class="prompt-input" id="promptInput" 
-                       placeholder="Enter your prompt..." value="The creature">
+                       placeholder="Enter your prompt..." value="These visions">
                 <button class="generate-btn" id="generateBtn">🚀 Generate with Diffusion</button>
             </div>
 

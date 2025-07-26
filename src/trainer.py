@@ -420,16 +420,25 @@ class CurriculumTrainer:
                     )
                     loss = outputs['loss']
                 
-                self.scaler.scale(loss).backward()
-                if self.training_config.get('gradient_clipping', 0) > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.training_config['gradient_clipping'])
+                # --- BUG FIX: Handle zero loss case to prevent GradScaler error ---
+                if loss is not None and loss.item() > 0:
+                    self.scaler.scale(loss).backward()
+                    if self.training_config.get('gradient_clipping', 0) > 0:
+                        self.scaler.unscale_(self.optimizer)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.training_config['gradient_clipping'])
+                    else:
+                        grad_norm = 0.0
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                 else:
+                    # If loss is 0 (e.g., no tokens were masked), skip optimizer step
                     grad_norm = 0.0
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
+                    if self.global_step % 500 == 0: # Log this occasionally
+                        print("[CONSOLE LOG] Loss is 0, skipping optimizer step.")
+                # --- END BUG FIX ---
+
+            else: # Not using scaler
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -437,14 +446,21 @@ class CurriculumTrainer:
                     output_attentions=True
                 )
                 loss = outputs['loss']
-                loss.backward()
-                if self.training_config.get('gradient_clipping', 0) > 0:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.training_config['gradient_clipping'])
+                
+                # --- BUG FIX: Handle zero loss case for non-scaler path ---
+                if loss is not None and loss.item() > 0:
+                    loss.backward()
+                    if self.training_config.get('gradient_clipping', 0) > 0:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.training_config['gradient_clipping'])
+                    else:
+                        grad_norm = 0.0
+                    self.optimizer.step()
                 else:
                     grad_norm = 0.0
-                self.optimizer.step()
-            # --- END MODIFIED ---
+                    if self.global_step % 500 == 0:
+                        print("[CONSOLE LOG] Loss is 0, skipping optimizer step.")
+                # --- END BUG FIX ---
             
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -461,13 +477,15 @@ class CurriculumTrainer:
             else:
                 memory_allocated = 0.0
             
+            current_loss = loss.item() if loss is not None else 0.0
+            
             # For logging, masking rate is now an average value, as it's random per-batch.
             metrics = TrainingMetrics(
                 epoch=epoch,
                 step=self.global_step,
                 stage=self.current_stage['name'],
-                loss=loss.item(),
-                perplexity=math.exp(loss.item()) if loss.item() < 10 else float('inf'),
+                loss=current_loss,
+                perplexity=math.exp(current_loss) if current_loss < 10 else float('inf'),
                 learning_rate=self.optimizer.param_groups[0]['lr'],
                 masking_rate=0.5, # Avg mask rate for MDLM is 50%
                 grad_norm=float(grad_norm) if grad_norm > 0 else 0.0,
@@ -479,13 +497,13 @@ class CurriculumTrainer:
             self._log_metrics(metrics)
             
             pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'ppl': f"{math.exp(loss.item()):.2f}" if loss.item() < 10 else "inf",
+                'loss': f"{current_loss:.4f}",
+                'ppl': f"{math.exp(current_loss):.2f}" if current_loss < 10 else "inf",
                 'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}",
                 'mem': f"{memory_allocated:.1f}GB"
             })
             
-            total_loss += loss.item() * batch_size
+            total_loss += current_loss * batch_size
             total_samples += batch_size
             self.tokens_processed += (attention_mask.sum().item())
             self.global_step += 1
