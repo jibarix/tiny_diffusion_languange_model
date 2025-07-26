@@ -80,9 +80,11 @@ class CurriculumTrainer:
     - Memory-efficient training loops
     """
     
-    def __init__(self, config: Dict[str, Any], data_pipeline: DataPipeline, device: str = 'auto'):
+    # --- MODIFICATION: Added debug_mode flag ---
+    def __init__(self, config: Dict[str, Any], data_pipeline: DataPipeline, device: str = 'auto', debug_mode: bool = False):
         self.config = config
         self.data_pipeline = data_pipeline
+        self.debug_mode = debug_mode # Store the debug mode flag
         
         # Device setup
         if device == 'auto':
@@ -116,11 +118,19 @@ class CurriculumTrainer:
         self.global_step = 0
         self.tokens_processed = 0
         
+        # --- MODIFICATION: Isolate debug outputs ---
         # Directories
-        self.output_dir = Path(self.training_config.get("output_dir", "outputs"))
+        base_output_dir = Path(self.training_config.get("output_dir", "outputs"))
+        if self.debug_mode:
+            self.output_dir = base_output_dir / "debug"
+            print("--- DEBUG MODE: All outputs will be saved to outputs/debug/ ---")
+        else:
+            self.output_dir = base_output_dir
+
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.logs_dir = self.output_dir / "logs"
         self.samples_dir = self.output_dir / "samples"
+        # --- END MODIFICATION ---
         
         # Create directories
         for dir_path in [self.checkpoint_dir, self.logs_dir, self.samples_dir]:
@@ -725,10 +735,12 @@ class CurriculumTrainer:
             return False
 
 
-def create_trainer_from_config(config: Dict[str, Any], data_pipeline: DataPipeline, device: str = 'auto') -> CurriculumTrainer:
+# --- MODIFICATION: Pass debug_mode flag to the trainer ---
+def create_trainer_from_config(config: Dict[str, Any], data_pipeline: DataPipeline, device: str = 'auto', debug_mode: bool = False) -> CurriculumTrainer:
     """Create trainer instance from configuration"""
-    trainer = CurriculumTrainer(config, data_pipeline, device)
+    trainer = CurriculumTrainer(config, data_pipeline, device, debug_mode=debug_mode)
     return trainer
+# --- END MODIFICATION ---
 
 
 # Example usage and testing
@@ -790,7 +802,7 @@ if __name__ == "__main__":
         pipeline = create_debug_data_pipeline(test_config)
         
         # Create trainer
-        trainer = create_trainer_from_config(test_config, pipeline, device='cpu')
+        trainer = create_trainer_from_config(test_config, pipeline, device='cpu', debug_mode=True)
         
         print("Trainer created successfully!")
         print(f"Device: {trainer.device}")
@@ -841,7 +853,7 @@ def quick_training_test(config: Dict[str, Any], data_pipeline: DataPipeline, max
     """
     print(f"Running quick training test ({max_steps} steps)...")
     
-    trainer = create_trainer_from_config(config, data_pipeline, device='auto')
+    trainer = create_trainer_from_config(config, data_pipeline, device='auto', debug_mode=True)
     
     # Setup first stage
     trainer._setup_stage(0)
@@ -958,7 +970,7 @@ def test_trainer(config: Dict[str, Any], data_pipeline, max_steps: int = 10):
     
     try:
         # Create trainer
-        trainer = create_trainer_from_config(config, data_pipeline, device='cpu')
+        trainer = create_trainer_from_config(config, data_pipeline, device='cpu', debug_mode=True)
         print(f"[OK] Trainer created successfully")
         print(f"Device: {trainer.device}")
         print(f"Stages: {len(trainer.stages)}")

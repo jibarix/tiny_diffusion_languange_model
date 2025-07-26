@@ -219,7 +219,8 @@ def generate():
         'max_tokens': data.get('max_tokens', 50),
         'steps': data.get('steps', 20),
         'temperature': data.get('temperature', 0.6),
-        'top_k': data.get('top_k', 20)
+        'top_k': data.get('top_k', 20),
+        'top_p': data.get('top_p', 0.85) # Added top_p
     }
     
     try:
@@ -253,7 +254,7 @@ def handle_streaming_generation(data):
         'steps': data.get('steps', 20),
         'temperature': data.get('temperature', 0.6),
         'top_k': data.get('top_k', 20),
-        'top_p': data.get('top_p', 0.9) # Add top_p
+        'top_p': data.get('top_p', 0.85) # Added top_p
     }
     
     try:
@@ -394,14 +395,12 @@ HTML_TEMPLATE = '''
             border-radius: 5px;
             color: #e8e8e8;
         }
-        /* --- NEW: Style for parameter descriptions --- */
         .setting-description {
             font-size: 0.8em;
             color: #999;
             margin-top: 5px;
             line-height: 1.4;
         }
-        /* --- END NEW --- */
         .output-section {
             background: rgba(0,0,0,0.4);
             padding: 30px;
@@ -563,7 +562,6 @@ HTML_TEMPLATE = '''
             </div>
 
             <div class="settings-panel">
-                <!-- --- MODIFIED: Added descriptions for each parameter --- -->
                 <div class="setting-group">
                     <label class="setting-label">Max Tokens</label>
                     <input type="number" class="setting-input" id="maxTokens" value="40" min="10" max="200">
@@ -584,7 +582,13 @@ HTML_TEMPLATE = '''
                     <input type="number" class="setting-input" id="topK" value="20" min="1" max="100">
                     <p class="setting-description">Restricts sampling to the K most likely words. Lower is safer. Typical: 20-100.</p>
                 </div>
-                <!-- --- END MODIFIED --- -->
+                <!-- --- NEW: Added Top-P parameter control --- -->
+                <div class="setting-group">
+                    <label class="setting-label">Top-P (Nucleus)</label>
+                    <input type="number" class="setting-input" id="topP" value="0.85" min="0.1" max="1.0" step="0.05">
+                    <p class="setting-description">Samples from the smallest set of words whose cumulative probability exceeds P. Typical: 0.8-0.95.</p>
+                </div>
+                <!-- --- END NEW --- -->
             </div>
         </div>
 
@@ -655,6 +659,8 @@ HTML_TEMPLATE = '''
                 this.steps = document.getElementById('steps');
                 this.temperature = document.getElementById('temperature');
                 this.topK = document.getElementById('topK');
+                // --- NEW: Get Top-P input element ---
+                this.topP = document.getElementById('topP');
             }
             
             bindEvents() {
@@ -694,12 +700,14 @@ HTML_TEMPLATE = '''
                 this.stats.style.display = 'none';
                 
                 // Send generation request
+                // --- NEW: Add top_p to the payload ---
                 this.socket.emit('generate_stream', {
                     prompt: prompt,
                     max_tokens: parseInt(this.maxTokens.value),
                     steps: parseInt(this.steps.value),
                     temperature: parseFloat(this.temperature.value),
-                    top_k: parseInt(this.topK.value)
+                    top_k: parseInt(this.topK.value),
+                    top_p: parseFloat(this.topP.value)
                 });
             }
             

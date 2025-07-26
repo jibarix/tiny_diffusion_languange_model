@@ -587,16 +587,28 @@ class EvaluationSuite:
         
         # 1. Basic generation test
         print("1. Testing basic generation...")
+        # --- MODIFICATION: Use thematic prompts from the report ---
         test_prompts = [
-            "The origin of",
-            "Natural selection",
-            "In the struggle for",
-            "Species which are"
+            "Victor felt",
+            "The monster",
+            "In my journal I wrote",
+            "The laboratory held",
+            "I created death"
         ]
+        
+        # --- MODIFICATION: Use optimal generation parameters from the report ---
+        optimal_gen_config = GenerationConfig(
+            max_new_tokens=80,          # Optimal range 60-100
+            num_diffusion_steps=50,     # Optimal is 50+
+            temperature=0.6,            # Optimal range 0.6-0.7
+            top_k=25,                   # Optimal range 20-25
+            top_p=0.85,                 # Keep as is, good value
+            do_sample=True
+        )
         
         generation_results = []
         for prompt in test_prompts:
-            result = self.generator.generate(prompt, GenerationConfig(max_new_tokens=50))
+            result = self.generator.generate(prompt, optimal_gen_config)
             generation_results.append(result)
         
         results['generation_test'] = {

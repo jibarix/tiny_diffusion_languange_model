@@ -117,21 +117,26 @@ class ProjectConfig:
         from .model import get_model_config
         from .curriculum import get_curriculum_config
         
+        # --- MODIFICATION FOR CONTINUED TRAINING ---
+        # Get the base model config and apply the fixed masking rate.
+        model_config = get_model_config()
+        model_config['fixed_masking_rate'] = 0.15 # Set to 15% for stable fine-tuning
+        
         return cls(
-            model=get_model_config(),
+            model=model_config,
             training={
                 # Core optimization parameters (2025 research-validated)
-                'batch_size': 32,                    # Reduced from 32 for 8GB VRAM stability
-                'learning_rate': 1e-4,              # Reduced from 2e-4 for stable convergence
-                'weight_decay': 0.01,               # Reduced from 0.1 for less regularization
-                'warmup_steps': 1500,               # Increased from 1000 for better warmup
+                'batch_size': 32,
+                'learning_rate': 1e-5,              # MODIFIED: Reduced for fine-tuning
+                'weight_decay': 0.01,
+                'warmup_steps': 1500,
                 'gradient_clipping': 1.0,
                 'optimizer': 'AdamW',
                 'scheduler': 'cosine_with_restarts',
                 
                 # Advanced optimization features
-                'label_smoothing': 0.1,             # NEW - reduces overconfidence/repetition
-                'gradient_accumulation_steps': 2,   # NEW - effective batch size = 16
+                'label_smoothing': 0.1,
+                'gradient_accumulation_steps': 2,
                 'mixed_precision': True,
                 'gradient_checkpointing': True,
                 
@@ -139,8 +144,7 @@ class ProjectConfig:
                 'max_epochs': 525, # Sum of curriculum epochs
                 'save_every': 10,
                 'eval_every': 5,
-                # *** FIX: Increased patience to allow for long training runs on small data ***
-                'early_stopping_patience': 50, # Was 20. Prevents premature stopping.
+                'early_stopping_patience': 30, # MODIFIED: Increased for longer convergence
             },
             curriculum=get_curriculum_config(),
             data={
@@ -154,9 +158,9 @@ class ProjectConfig:
             evaluation={
                 # Optimized generation parameters
                 'generation_length': 100,
-                'temperature': 0.6,                 # Reduced from 0.8 for less randomness
-                'top_p': 0.85,                     # Reduced from 0.9 for better coherence
-                'top_k': 20,                       # Reduced from 50 for focused sampling
+                'temperature': 0.6,
+                'top_p': 0.85,
+                'top_k': 20,
                 'num_samples': 5,
                 'perplexity_eval_size': 1000,
             },
@@ -187,11 +191,11 @@ class ProjectConfig:
         
         # Fast training with optimized parameters
         config.training.update({
-            'batch_size': 4,                # Even smaller for debug
-            'learning_rate': 1e-4,          # Keep optimized LR
-            'label_smoothing': 0.1,         # Keep optimization
+            'batch_size': 4,
+            'learning_rate': 1e-4,
+            'label_smoothing': 0.1,
             'gradient_accumulation_steps': 2,
-            'max_epochs': 3,                # 1 epoch per stage
+            'max_epochs': 3,
             'save_every': 1,
             'eval_every': 1,
         })
@@ -223,16 +227,16 @@ class ProjectConfig:
         
         # Memory optimizations (already applied in default)
         config.training.update({
-            'batch_size': 4,                # Even smaller for extreme memory efficiency
-            'gradient_accumulation_steps': 4, # Effective batch size = 16
+            'batch_size': 4,
+            'gradient_accumulation_steps': 4,
             'gradient_checkpointing': True,
             'mixed_precision': True,
         })
         
         # Smaller model variant
         config.model.update({
-            'd_model': 512,  # Reduced from 768
-            'n_layers': 10,  # Reduced from 12
+            'd_model': 512,
+            'n_layers': 10,
         })
         
         # Recalculate head_dim
@@ -240,7 +244,7 @@ class ProjectConfig:
         
         config.system.update({
             'memory_efficient': True,
-            'num_workers': 2,  # Reduce CPU memory usage
+            'num_workers': 2,
         })
         
         return config
@@ -252,10 +256,10 @@ class ProjectConfig:
         
         # Slightly more realistic than debug but still fast
         config.training.update({
-            'batch_size': 8,                # Use optimized batch size
-            'learning_rate': 1e-4,          # Keep optimized LR
-            'label_smoothing': 0.1,         # Keep optimization
-            'max_epochs': 6,                # 2 epochs per stage
+            'batch_size': 8,
+            'learning_rate': 1e-4,
+            'label_smoothing': 0.1,
+            'max_epochs': 6,
         })
         
         config.curriculum['stages'][0]['epochs'] = 2

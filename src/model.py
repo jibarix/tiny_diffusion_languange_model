@@ -334,6 +334,10 @@ class MaskedDiffusionLM(nn.Module):
         self.mask_token_id = config.get('mask_token_id', 1)  # [MASK] at position 1
         self.pad_token_id = config.get('pad_token_id', 2)   # [PAD] at position 2 (NOT 0!)
         
+        # --- MODIFICATION 1: Store fixed masking rate from config ---
+        # This allows controlling the masking rate from the config file.
+        self.fixed_masking_rate = config.get('fixed_masking_rate', None)
+        
         # Log the token mapping for verification
         print(f"Model token configuration:")
         print(f"  EOS token ID: {self.eos_token_id}")
@@ -447,16 +451,20 @@ class MaskedDiffusionLM(nn.Module):
                 device = input_ids.device
                 clean_labels = labels.clone() # `labels` are the clean tokens
 
-                # 1. Sample a random timestep t for each sequence in the batch
-                t_start = torch.arange(batch_size, device=device) / batch_size
-                t_end = torch.arange(1, batch_size + 1, device=device) / batch_size
-                t = torch.rand(batch_size, device=device) * (t_end - t_start) + t_start
-                t = t.view(-1, 1)
+                # --- MODIFICATION 2: Use fixed masking rate if provided in config ---
+                # 1. Get timestep t, using fixed rate if provided
+                if self.fixed_masking_rate is not None:
+                    # Use the fixed rate from the config for fine-tuning or specific experiments
+                    t = torch.full((batch_size, 1), self.fixed_masking_rate, device=device)
+                else:
+                    # Fall back to the original dynamic sampling for standard training
+                    t_start = torch.arange(batch_size, device=device) / batch_size
+                    t_end = torch.arange(1, batch_size + 1, device=device) / batch_size
+                    t = torch.rand(batch_size, device=device) * (t_end - t_start) + t_start
+                    t = t.view(-1, 1)
 
-                # --- MODIFIED: Changed print() to logging.info() ---
-                if self.training and random.random() < 0.01:
+                if self.training and random.random() < 0.01: # if self.training and random.random() < 0.01: (temporarily remove the random.random() < 0.01 condition so it prints every time during training)
                     logging.info(f"[CONSOLE LOG] MDLM Objective: Sampled t values (min/max): {t.min().item():.3f}/{t.max().item():.3f}")
-                # --- END MODIFIED ---
 
                 # 2. Get noise schedule value alpha_t and loss weight
                 alpha_t, weight = self.get_alpha_t_and_weight(t, device)

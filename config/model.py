@@ -103,6 +103,7 @@ def get_model_config() -> Dict[str, Any]:
         # Diffusion-specific
         'mask_token_id': None,  # Will be set by tokenizer
         'pad_token_id': None,   # Will be set by tokenizer
+        'fixed_masking_rate': None, # ADDED: Allows overriding dynamic masking
     }
     
     # Calculate derived parameters
@@ -258,7 +259,7 @@ def estimate_memory_requirements(config: Dict[str, Any], batch_size: int = 32, s
     activation_memory_gb = batch_size * sequence_length * d_model * n_layers * 4 / 1e9
     
     # Gradients (same size as model)
-    gradient_memory_gb = model_memory_gb
+    gradient_memory_gb = model_memory
     
     # Optimizer states (AdamW: 2x model params for momentum and variance)
     optimizer_memory_gb = model_memory_gb * 2
@@ -325,7 +326,7 @@ if __name__ == "__main__":
     # Test presets
     print("\nTesting presets...")
     for preset_name in ['debug_7m', 'memory_efficient']:
-        print(f"\n{preset_name.upper()}:")
+        print(f"\n{preset_name.upper()}:\n")
         preset_config = get_model_config_by_preset(preset_name)
         validate_model_config(preset_config)
         

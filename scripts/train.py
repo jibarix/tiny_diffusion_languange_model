@@ -32,7 +32,7 @@ sys.path.insert(0, str(project_root))
 from config import ProjectConfig
 from src.data import DataPipeline, create_debug_data_pipeline
 from src.trainer import create_trainer_from_config, test_trainer, quick_training_test, estimate_training_time
-from src.evaluation import TextGenerator, StyleAnalyzer
+from src.evaluation import EvaluationSuite
 
 # Configure logging
 logging.basicConfig(
@@ -83,7 +83,7 @@ def test_installation():
         logger.info("[OK] Data pipeline creation working")
         
         # Test trainer creation
-        trainer = create_trainer_from_config(config.to_dict(), pipeline, device='cpu')
+        trainer = create_trainer_from_config(config.to_dict(), pipeline, device='cpu', debug_mode=True)
         logger.info("[OK] Trainer creation working")
         
         # Setup stage to initialize model
@@ -189,7 +189,7 @@ def prepare_data(book_path: str, config: Dict[str, Any]) -> DataPipeline:
     return pipeline
 
 
-def run_training(config: Dict[str, Any], data_pipeline: DataPipeline, resume_from: Optional[str] = None):
+def run_training(config: Dict[str, Any], data_pipeline: DataPipeline, resume_from: Optional[str] = None, debug_mode: bool = False):
     """
     Execute the complete 3-stage training curriculum.
     
@@ -197,14 +197,15 @@ def run_training(config: Dict[str, Any], data_pipeline: DataPipeline, resume_fro
         config: Training configuration
         data_pipeline: Prepared data pipeline
         resume_from: Optional checkpoint path to resume from
+        debug_mode: Flag to isolate debug outputs
     """
     logger.info("Starting training...")
     
     # Print training estimates
     estimate_training_time(config, data_pipeline)
     
-    # Create trainer
-    trainer = create_trainer_from_config(config, data_pipeline, device='auto')
+    # Create trainer, passing the debug_mode flag
+    trainer = create_trainer_from_config(config, data_pipeline, device='auto', debug_mode=debug_mode)
     
     # Resume from checkpoint if specified
     if resume_from:
@@ -213,7 +214,7 @@ def run_training(config: Dict[str, Any], data_pipeline: DataPipeline, resume_fro
     
     # Execute curriculum training
     logger.info("Beginning 3-stage curriculum training...")
-    stage_results = trainer.train_full_curriculum()  # Fixed method name
+    stage_results = trainer.train_full_curriculum()
     
     # Return best model path (constructed from trainer's checkpoint directory)
     best_model_path = trainer.checkpoint_dir / "best_stage3.pt"
@@ -233,56 +234,41 @@ def run_evaluation(model_path: str, config: Dict[str, Any], data_pipeline: DataP
     logger.info("Running evaluation...")
     
     try:
-        # *** FIX: Determine the correct device before loading the model ***
-        # The error occurs because 'auto' is not a valid map_location for torch.load.
-        # We need to resolve it to 'cuda' or 'cpu' first.
         device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        # Load the trained model and checkpoint
         from src.model import load_model_checkpoint
-        # Pass the resolved device string to the loading function
         model, checkpoint = load_model_checkpoint(model_path, device=device_str)
         
-        # Load tokenizer
         tokenizer = data_pipeline.tokenizer
         if tokenizer is None:
             logger.warning("No tokenizer available, skipping evaluation")
             return
+
+        # Use the full evaluation suite
+        suite = EvaluationSuite(model, tokenizer, data_pipeline, device=device_str)
         
-        # Create generator
-        from src.evaluation import TextGenerator, GenerationConfig
-        # Pass the resolved device string to the generator
-        generator = TextGenerator(model, tokenizer, device=device_str)
+        # Run the full evaluation
+        results = suite.full_evaluation(reference_text=data_pipeline.raw_text)
         
-        # Generation config
-        gen_config = GenerationConfig(
-            max_new_tokens=50,  # Reduced for debug mode
-            temperature=0.8,
-            top_p=0.9,
-            top_k=50,
-            num_diffusion_steps=10  # Reduced for speed
-        )
-        
-        # Generate sample texts
-        prompts = [
-            "The origin of",
-            "Natural selection"
-        ]
-        
-        logger.info("Generating sample texts...")
-        for prompt in prompts:
-            try:
-                result = generator.generate(prompt, gen_config)
-                logger.info(f"Prompt: '{prompt}'")
-                logger.info(f"Generated: {result.generated_text}")
+        # --- MODIFICATION: Log generated text samples to console ---
+        logger.info("Generated sample texts:")
+        if 'generation_test' in results and 'results' in results['generation_test']:
+            for gen_result in results['generation_test']['results']:
                 logger.info("-" * 50)
-            except Exception as e:
-                logger.warning(f"Generation failed for prompt '{prompt}': {e}")
+                logger.info(f"Prompt: '{gen_result.prompt}'")
+                logger.info(f"Generated: {gen_result.generated_text}")
+        logger.info("-" * 50)
+        # --- END MODIFICATION ---
+
+        # Print the summary table
+        suite.print_evaluation_summary(results)
         
-        logger.info("Basic evaluation complete!")
+        logger.info("Evaluation complete!")
         
     except Exception as e:
         logger.error(f"Evaluation failed: {e}")
+        import traceback
+        traceback.print_exc()
         logger.info("Skipping evaluation - training was successful though!")
 
 
@@ -414,7 +400,7 @@ Examples:
             data_pipeline = create_debug_data_pipeline(config_dict)
         
         # Run training
-        best_model_path = run_training(config_dict, data_pipeline, resume_from=args.resume)
+        best_model_path = run_training(config_dict, data_pipeline, resume_from=args.resume, debug_mode=args.debug)
         
         # Run evaluation (unless disabled)
         if not args.no_eval:
