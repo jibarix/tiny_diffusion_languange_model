@@ -19,7 +19,7 @@ import torch
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.model import load_model_checkpoint
+from src.model import load_model_checkpoint, MaskedDiffusionLM
 from src.data import CompressedTokenizer
 
 app = Flask(__name__)
@@ -38,125 +38,114 @@ class WebDiffusionGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-        self.mask_token_id = tokenizer.token_mapping.get('[MASK]', 1)
+        # --- MODIFIED: Get special token IDs from the model's config for consistency ---
+        self.mask_token_id = self.model.mask_token_id
+        self.pad_token_id = self.model.pad_token_id
+        self.eos_token_id = self.model.eos_token_id
+        # --- END MODIFIED ---
         
     def generate_streaming(self, prompt: str, config: Dict[str, Any]):
-        """Stream generation events to web client using actual model inference"""
-        import random
+        """
+        --- MODIFIED: This function now uses the model's actual `generate_step` method ---
+        This ensures the web visualization is a faithful representation of the model's
+        internal decoding process, rather than a simulation.
+        """
         
         # Parse config
         max_new_tokens = config.get('max_tokens', 50)
         num_diffusion_steps = config.get('steps', 20)
-        temperature = config.get('temperature', 0.6)
-        top_k = config.get('top_k', 20)
         
-        # Initialize sequence with properly decoded prompt tokens
+        # Initialize sequence with prompt tokens
         prompt_token_ids = self.tokenizer.encode(prompt)
         
-        # Create input sequence: prompt + masked tokens
-        input_ids = prompt_token_ids + [self.mask_token_id] * max_new_tokens
+        # Create the full sequence with prompt + masked tokens for new content
+        masked_new_tokens = [self.mask_token_id] * max_new_tokens
+        current_ids = prompt_token_ids + masked_new_tokens
         
-        # Only track the NEW tokens for display (not the prompt)
-        display_tokens = [-1] * max_new_tokens  # Only new tokens
-        token_states = ['masked'] * max_new_tokens  # Only new tokens
-        
-        # Send initial state
+        # Send initial state to the client
         yield {
             'type': 'init',
             'prompt': prompt,
-            'total_tokens': max_new_tokens,  # Only count new tokens
+            'total_tokens': max_new_tokens, # Only new tokens are part of the animation
             'steps': num_diffusion_steps
         }
         
         # Diffusion loop
         for step in range(num_diffusion_steps):
-            # Calculate masking schedule
-            progress = (step + 1) / num_diffusion_steps
-            masking_rate = 1.0 - progress
-            
-            # Send step update
+            # Send step update to the client
             yield {
                 'type': 'step',
                 'step': step + 1,
-                'progress': progress,
-                'masking_rate': masking_rate
+                'progress': (step + 1) / num_diffusion_steps,
+                'masking_rate': 1.0 - ((step + 1) / num_diffusion_steps)
             }
             
-            # Find masked positions (only in the new token range)
-            masked_positions = [i for i, state in enumerate(token_states) if state == 'masked']
+            # Prepare tensors for the model
+            input_tensor = torch.tensor([current_ids], device=self.device)
+            attention_mask = (input_tensor != self.pad_token_id).long()
             
-            if masked_positions:
-                # Use actual model inference
-                with torch.no_grad():
-                    # Prepare input tensor
-                    input_tensor = torch.tensor([input_ids], device=self.device)
-                    
-                    # Get model predictions
-                    outputs = self.model(input_ids=input_tensor)
-                    logits = outputs['logits'][0]  # [seq_len, vocab_size]
+            # --- CORE CHANGE: Use the model's own generate_step method ---
+            # This delegates the actual token prediction to the model's robust logic.
+            print(f"[Web UI] Calling model.generate_step() for step {step + 1}")
+            with torch.no_grad():
+                next_ids_tensor = self.model.generate_step(
+                    input_ids=input_tensor,
+                    attention_mask=attention_mask,
+                    temperature=config.get('temperature', 0.6),
+                    top_k=config.get('top_k', 20),
+                    top_p=config.get('top_p', 0.9),
+                    do_sample=True
+                )
+            next_ids = next_ids_tensor[0].tolist()
+            # --- END CORE CHANGE ---
+
+            # Find which tokens were newly revealed in this step
+            newly_revealed_indices = []
+            for i in range(len(prompt_token_ids), len(current_ids)):
+                if current_ids[i] == self.mask_token_id and next_ids[i] != self.mask_token_id:
+                    newly_revealed_indices.append(i)
+            
+            # Send reveal events for animation
+            for seq_pos in newly_revealed_indices:
+                token_id = next_ids[seq_pos]
+                token_text = self.tokenizer.decode([token_id])
                 
-                # Determine how many tokens to reveal this step
-                tokens_to_reveal = max(1, int(len(masked_positions) * 0.3))
-                positions_to_reveal = random.sample(masked_positions, 
-                                                   min(tokens_to_reveal, len(masked_positions)))
+                # Position relative to the new tokens (for display)
+                display_pos = seq_pos - len(prompt_token_ids)
                 
-                for pos in positions_to_reveal:
-                    # Get logits for this position (offset by prompt length)
-                    actual_pos = pos + len(prompt_token_ids)
-                    pos_logits = logits[actual_pos]
-                    
-                    # Apply temperature
-                    pos_logits = pos_logits / temperature
-                    
-                    # Apply top-k filtering
-                    if top_k > 0:
-                        top_k_logits, top_k_indices = torch.topk(pos_logits, min(top_k, pos_logits.size(-1)))
-                        indices_to_remove = pos_logits < top_k_logits[..., -1, None]
-                        pos_logits[indices_to_remove] = float('-inf')
-                    
-                    # Sample from distribution
-                    probabilities = torch.softmax(pos_logits, dim=-1)
-                    predicted_token_id = torch.multinomial(probabilities, 1).item()
-                    
-                    # Get token text
-                    vocab_items = list(self.tokenizer.compressed_vocab.items())
-                    predicted_token = next((token for token, tid in vocab_items if tid == predicted_token_id), str(predicted_token_id))
-                    
-                    # Clean up the token for display
-                    display_token = predicted_token.replace('Ġ', ' ').strip()
-                    if not display_token:
-                        display_token = predicted_token
-                    
-                    # Update sequence
-                    input_ids[actual_pos] = predicted_token_id
-                    display_tokens[pos] = display_token
-                    token_states[pos] = 'revealing'
-                    
-                    # Send token reveal event
-                    yield {
-                        'type': 'reveal',
-                        'position': pos,
-                        'token': display_token,
-                        'state': 'revealing'
-                    }
-                
-                # Mark as revealed after animation
-                for pos in positions_to_reveal:
-                    token_states[pos] = 'revealed'
-                    yield {
-                        'type': 'stabilize',
-                        'position': pos,
-                        'state': 'revealed'
-                    }
-        
-        # Generate final text (only from new tokens)
-        final_tokens = [str(t) for t in display_tokens if t != -1]
-        final_text = ' '.join(final_tokens).replace('Ġ', ' ').strip()
+                yield {
+                    'type': 'reveal',
+                    'position': display_pos,
+                    'token': token_text,
+                    'state': 'revealing'
+                }
+                # Yield a small delay for animation purposes
+                yield {'type': 'delay', 'duration': 0.05}
+
+            # Send stabilize events after revealing
+            for seq_pos in newly_revealed_indices:
+                display_pos = seq_pos - len(prompt_token_ids)
+                yield {
+                    'type': 'stabilize',
+                    'position': display_pos,
+                    'state': 'revealed'
+                }
+
+            # Update the sequence for the next iteration
+            current_ids = next_ids
+            
+            # End if no masks are left
+            if self.mask_token_id not in current_ids:
+                break
+
+        # Construct final text from the generated part of the sequence
+        final_token_ids = current_ids[len(prompt_token_ids):]
+        final_text = self.tokenizer.decode(final_token_ids)
         
         yield {
             'type': 'complete',
             'final_text': final_text,
-            'total_tokens': len(final_tokens)
+            'total_tokens': len(final_token_ids)
         }
 
 
@@ -176,81 +165,16 @@ def load_models():
         return False
     
     try:
-        # Load tokenizer first
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # --- MODIFIED: Use the robust `load_model_checkpoint` function ---
+        # This function handles loading the config from the checkpoint correctly.
+        print(f"Loading model from checkpoint: {checkpoint_path}")
+        model, checkpoint = load_model_checkpoint(checkpoint_path, str(device))
+        
+        # Load tokenizer
         tokenizer = CompressedTokenizer.load(tokenizer_path)
         print(f"✅ Tokenizer loaded: {len(tokenizer.compressed_vocab)} tokens")
-        
-        # Load checkpoint
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        
-        # Extract model configuration from checkpoint
-        if 'config' in checkpoint and isinstance(checkpoint['config'], dict):
-            config = checkpoint['config']
-            if 'model' in config:
-                model_config = config['model']
-                # Ensure vocab_size matches tokenizer
-                model_config['vocab_size'] = len(tokenizer.compressed_vocab)
-                model_config['mask_token_id'] = tokenizer.token_mapping.get('[MASK]', 1)
-                model_config['pad_token_id'] = tokenizer.token_mapping.get('[PAD]', 0)
-                print(f"✅ Using model config from checkpoint")
-                print(f"  d_model: {model_config.get('d_model')}")
-                print(f"  n_layers: {model_config.get('n_layers')}")
-                print(f"  n_heads: {model_config.get('n_heads')}")
-            else:
-                raise ValueError("No model config found in checkpoint")
-        else:
-            print("⚠️  No valid config in checkpoint, attempting to infer from state_dict...")
-            
-            # Try to infer model config from state dict shapes
-            state_dict = checkpoint.get('model_state_dict', checkpoint)
-            
-            # Infer dimensions from embedding layer
-            embed_shape = state_dict['embed_tokens.weight'].shape
-            vocab_size, d_model = embed_shape
-            
-            # Count layers by looking for layer keys
-            layer_keys = [k for k in state_dict.keys() if k.startswith('layers.')]
-            max_layer = max([int(k.split('.')[1]) for k in layer_keys]) + 1
-            
-            # Infer number of heads from attention projection shapes
-            q_proj_shape = state_dict['layers.0.self_attn.q_proj.weight'].shape
-            n_heads = 12 if d_model == 768 else 4  # Common configurations
-            
-            model_config = {
-                'd_model': d_model,
-                'n_layers': max_layer,
-                'n_heads': n_heads,
-                'head_dim': d_model // n_heads,
-                'ffn_hidden_size': 2048 if d_model >= 512 else d_model * 4,
-                'vocab_size': vocab_size,
-                'max_position_embeddings': 2048,
-                'attention_dropout': 0.0,
-                'hidden_dropout': 0.1,
-                'use_causal_mask': False,
-                'mask_token_id': tokenizer.token_mapping.get('[MASK]', 1),
-                'pad_token_id': tokenizer.token_mapping.get('[PAD]', 0),
-                'norm_eps': 1e-6,
-                'initializer_range': 0.02,
-                'gradient_checkpointing': False,
-                'use_cache': False,
-            }
-            
-            print(f"✅ Inferred model config:")
-            print(f"  d_model: {model_config['d_model']}")
-            print(f"  n_layers: {model_config['n_layers']}")
-            print(f"  n_heads: {model_config['n_heads']}")
-        
-        # Create model with correct config
-        from src.model import MaskedDiffusionLM
-        model = MaskedDiffusionLM(model_config)
-        
-        # Load state dict
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            # Assume checkpoint is just the state dict
-            model.load_state_dict(checkpoint)
         
         model.to(device)
         model.eval()
@@ -258,6 +182,7 @@ def load_models():
         print(f"✅ Model loaded successfully on {device}")
         print(f"  Parameters: {model.get_num_params():,}")
         return True
+        # --- END MODIFIED ---
         
     except Exception as e:
         print(f"❌ Error loading models: {e}")
@@ -327,7 +252,8 @@ def handle_streaming_generation(data):
         'max_tokens': data.get('max_tokens', 50),
         'steps': data.get('steps', 20),
         'temperature': data.get('temperature', 0.6),
-        'top_k': data.get('top_k', 20)
+        'top_k': data.get('top_k', 20),
+        'top_p': data.get('top_p', 0.9) # Add top_p
     }
     
     try:
@@ -335,7 +261,12 @@ def handle_streaming_generation(data):
         
         for event in generator.generate_streaming(prompt, config):
             emit('generation_event', event)
-            socketio.sleep(0.1)  # Control animation speed
+            # --- MODIFIED: Use event-based delay for smoother animation ---
+            if event.get('type') == 'delay':
+                socketio.sleep(event.get('duration', 0.05))
+            else:
+                socketio.sleep(0.01) # Minimal delay for other events
+            # --- END MODIFIED ---
             
     except Exception as e:
         emit('error', {'message': str(e)})
