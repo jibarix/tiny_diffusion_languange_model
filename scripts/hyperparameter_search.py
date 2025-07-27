@@ -34,9 +34,7 @@ sys.path.insert(0, str(project_root))
 import optuna
 from optuna.pruners import HyperbandPruner
 from optuna.samplers import TPESampler
-# --- NEW: Import for visualization ---
 import optuna.visualization as vis
-# --- END NEW ---
 import torch
 import random
 import numpy as np
@@ -44,7 +42,7 @@ import numpy as np
 from config import ProjectConfig
 from src.data import DataPipeline
 from src.trainer import create_trainer_from_config, CurriculumTrainer
-from src.evaluation import EvaluationSuite
+from src.evaluation import EvaluationSuite, GenerationConfig
 
 # Configure logging for the search script
 logging.basicConfig(
@@ -66,8 +64,9 @@ def run_lightweight_eval(trainer: CurriculumTrainer, data_pipeline: DataPipeline
     prompts = ["The monster", "Victor felt", "In the laboratory", "A sense of dread"]
     generated_texts = []
     if trainer.evaluation_suite:
+        eval_gen_config = GenerationConfig(max_new_tokens=30)
         generated_texts = [
-            trainer.evaluation_suite.generator.generate(p, max_new_tokens=30).generated_text
+            trainer.evaluation_suite.generator.generate(p, config=eval_gen_config).generated_text
             for p in prompts
         ]
     
@@ -144,7 +143,6 @@ def objective(trial: optuna.trial.Trial, base_config: ProjectConfig, data_pipeli
         )
         
         # 4. Multi-Fidelity Training with Pruning
-        # The trainer will report loss after each epoch and check for pruning signals.
         stage_results = trainer.train_full_curriculum()
 
         if not stage_results:
@@ -198,6 +196,12 @@ def main():
 
     logger.info("Starting advanced hyperparameter search with Optuna...")
 
+    # --- NEW: Create a dedicated directory for HPO results ---
+    hpo_output_dir = Path("outputs") / "hpo_results"
+    hpo_output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"HPO results will be saved to: {hpo_output_dir}")
+    # --- END NEW ---
+
     base_config = ProjectConfig.debug()
 
     logger.info("Loading pre-processed data...")
@@ -238,14 +242,27 @@ def main():
     for key, value in trial.params.items():
         print(f"    {key}: {value}")
 
-    # --- NEW: Generate and show intermediate values plot ---
+    # --- NEW: Save the best parameters to a JSON file ---
+    best_params_path = hpo_output_dir / f"best_params_{study.study_name}.json"
+    best_params_data = {
+        "best_value": trial.value,
+        "best_params": trial.params,
+    }
+    with open(best_params_path, 'w') as f:
+        json.dump(best_params_data, f, indent=4)
+    print(f"\nBest parameters saved to: {best_params_path}")
+    # --- END NEW ---
+
+    # --- MODIFIED: Generate and save the plot to the new directory ---
     if vis.is_available():
         print("\nGenerating intermediate values plot to show pruning...")
         fig = vis.plot_intermediate_values(study)
-        fig.show()
+        plot_path = hpo_output_dir / "hpo_intermediate_values.html"
+        fig.write_html(plot_path)
+        print(f"Plot saved to '{plot_path}'. Open this file in a web browser to see the results.")
     else:
         print("\nInstall plotly to visualize pruning: pip install plotly")
-    # --- END NEW ---
+    # --- END MODIFIED ---
 
 
 if __name__ == '__main__':

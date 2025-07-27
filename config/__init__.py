@@ -130,10 +130,10 @@ class ProjectConfig:
             model=model_config,
             training={
                 # Core optimization parameters (2025 research-validated)
-                'batch_size': 32,
-                'learning_rate': 1e-5,
+                'batch_size': 16,
+                'learning_rate': 8.49e-06,
                 'weight_decay': 0.01,
-                'warmup_steps': 1500,
+                'warmup_steps': 3000,
                 'gradient_clipping': 1.0,
                 'optimizer': 'AdamW',
                 'scheduler': 'cosine_with_restarts',
