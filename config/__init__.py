@@ -148,7 +148,7 @@ class ProjectConfig:
                 'max_epochs': total_epochs, # Calculated from curriculum epochs
                 'save_every': 10,
                 'eval_every': 5,
-                'early_stopping_patience': 30, # MODIFIED: Increased for longer convergence
+                'early_stopping_patience': 30,
             },
             curriculum=curriculum_config,
             data={
@@ -187,8 +187,8 @@ class ProjectConfig:
         
         # Minimal curriculum
         config.curriculum['stages'][0]['epochs'] = 1
-        config.curriculum['stages'][1]['epochs'] = 2
-        config.curriculum['stages'][2]['epochs'] = 3
+        config.curriculum['stages'][1]['epochs'] = 1
+        config.curriculum['stages'][2]['epochs'] = 1
         
         # Calculate total epochs from curriculum
         total_epochs = sum(stage['epochs'] for stage in config.curriculum['stages'])

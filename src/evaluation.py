@@ -6,6 +6,8 @@ Complete evaluation suite for tiny masked diffusion language model:
 - Stylometric analysis and similarity metrics
 - Performance benchmarking and comparison tools
 - Interactive generation and analysis tools
+- MODIFIED: Added BERTScore and Distinct-n for advanced HPO evaluation
+- HARDENED: Added robustness for SpaCy loading, metric calculation, and caching advice.
 
 Based on 2025 research on diffusion model evaluation and style transfer.
 """
@@ -32,6 +34,11 @@ import spacy
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import textstat
+from nltk.util import ngrams
+
+# --- NEW: Import for BERTScore and Distinct-n ---
+import evaluate
+# --- END NEW ---
 
 # Local imports
 from .model import MaskedDiffusionLM
@@ -69,6 +76,11 @@ class StyleMetrics:
     punctuation_density: float
     function_word_ratio: float
     sentence_length_variance: float
+    # --- MODIFIED: Add Distinct-n metrics for diversity ---
+    distinct_1: float
+    distinct_2: float
+    distinct_3: float # Added as per suggestion
+    # --- END MODIFIED ---
 
 
 @dataclass
@@ -116,7 +128,6 @@ class TextGenerator:
         if config is None:
             config = GenerationConfig()
         
-        # Set random seed if specified
         if config.seed is not None:
             torch.manual_seed(config.seed)
             random.seed(config.seed)
@@ -125,12 +136,10 @@ class TextGenerator:
         import time
         start_time = time.time()
         
-        # Tokenize prompt
         prompt_tokens = self.tokenizer.encode(prompt)
         input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.device)
         
         with torch.no_grad():
-            # Generate using diffusion
             generated_ids = self.model.generate(
                 input_ids=input_ids,
                 max_new_tokens=config.max_new_tokens,
@@ -141,18 +150,13 @@ class TextGenerator:
                 do_sample=config.do_sample,
             )
         
-        # --- FIX: Correctly extract the newly generated part of the text ---
-        # The old method used string slicing which is unreliable.
-        # This new method works at the token level for perfect extraction.
         prompt_token_count = input_ids.shape[1]
         new_token_ids = generated_ids[0, prompt_token_count:].tolist()
         generated_text = self.tokenizer.decode(new_token_ids).strip()
         full_text = self.tokenizer.decode(generated_ids[0].tolist())
-        # --- END FIX ---
         
         generation_time = time.time() - start_time
         
-        # Analyze generated text
         analyzer = StyleAnalyzer()
         style_metrics = analyzer.analyze_text(generated_text)
         
@@ -175,7 +179,6 @@ class TextGenerator:
         results = []
         
         for i in range(num_samples):
-            # Use different seeds for variety
             if config and config.seed is not None:
                 sample_config = GenerationConfig(**asdict(config))
                 sample_config.seed = config.seed + i
@@ -250,15 +253,18 @@ class StyleAnalyzer:
     """Stylometric analysis and similarity metrics"""
     
     def __init__(self):
-        # Initialize NLP tools
+        # --- MODIFIED: Robust SpaCy model loading ---
         try:
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
-            raise RuntimeError("spaCy model 'en_core_web_sm' not found")
+            print("Downloading SpaCy model 'en_core_web_sm'...")
+            spacy.cli.download("en_core_web_sm")
+            self.nlp = spacy.load("en_core_web_sm")
+        # --- END MODIFIED ---
         
         self.embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        self.embedding_cache = {}
         
-        # Function words for analysis
         self.function_words = {
             'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have',
             'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you',
@@ -267,58 +273,79 @@ class StyleAnalyzer:
             'there', 'their'
         }
     
+    def _calculate_distinct_n(self, text: str, n: int) -> float:
+        """
+        Calculates the ratio of unique n-grams to the total number of n-grams.
+        """
+        if not text.strip():
+            return 0.0
+        
+        tokens = nltk.word_tokenize(text.lower())
+        if len(tokens) < n:
+            return 0.0
+            
+        n_grams = list(ngrams(tokens, n))
+        if not n_grams:
+            return 0.0
+            
+        distinct_n_grams = set(n_grams)
+        return len(distinct_n_grams) / len(n_grams)
+
     def analyze_text(self, text: str) -> StyleMetrics:
         """Comprehensive stylometric analysis"""
         if not text or not text.strip():
-            return StyleMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0)
+            return StyleMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         
-        # Basic preprocessing
         doc = self.nlp(text)
         sentences = list(doc.sents)
         words = [token.text.lower() for token in doc if token.is_alpha]
         
         if not words or not sentences:
-            return StyleMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0)
+            return StyleMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         
-        # Sentence-level metrics
         sentence_lengths = [len([t for t in sent if t.is_alpha]) for sent in sentences]
         avg_sentence_length = np.mean(sentence_lengths) if sentence_lengths else 0
         sentence_length_variance = np.var(sentence_lengths) if len(sentence_lengths) > 1 else 0
         
-        # Vocabulary richness
         vocab_size = len(set(words))
         total_words = len(words)
         ttr = vocab_size / total_words if total_words > 0 else 0
         
-        # Yule's K (vocabulary diversity)
-        word_counts = Counter(words)
-        freq_spectrum = Counter(word_counts.values())
+        # --- MODIFIED: Hardened Yule's K calculation ---
         yule_k = 0
-        if total_words > 0:
-            try:
-                yule_k = 10000 * (sum([freq * (i/total_words)**2 for i, freq in freq_spectrum.items()]) - 1/total_words)
-            except:
-                yule_k = 0
+        try:
+            word_counts = Counter(words)
+            freq_spectrum = Counter(word_counts.values())
+            if total_words > 0:
+                # Standard implementation of Yule's K
+                m1 = total_words
+                m2 = sum([freq ** 2 for freq in freq_spectrum.keys()])
+                yule_k = 10000 * (m2 - m1) / (m1 * m1)
+        except Exception:
+            yule_k = 0 # Fail gracefully
+        # --- END MODIFIED ---
         
-        # Readability
         try:
             flesch_kincaid = textstat.flesch_kincaid_grade(text)
             gunning_fog = textstat.gunning_fog(text)
-        except:
+        except Exception:
             flesch_kincaid = 0
             gunning_fog = 0
         
-        # Word length
         avg_word_length = np.mean([len(word) for word in words]) if words else 0
         
-        # Punctuation density
         punctuation_marks = sum(1 for token in doc if token.is_punct)
         punctuation_density = punctuation_marks / len(doc) if len(doc) > 0 else 0
         
-        # Function word ratio
         function_word_count = sum(1 for word in words if word in self.function_words)
         function_word_ratio = function_word_count / total_words if total_words > 0 else 0
         
+        distinct_1 = self._calculate_distinct_n(text, 1)
+        distinct_2 = self._calculate_distinct_n(text, 2)
+        # --- MODIFIED: Add Distinct-3 ---
+        distinct_3 = self._calculate_distinct_n(text, 3)
+        # --- END MODIFIED ---
+
         return StyleMetrics(
             avg_sentence_length=avg_sentence_length,
             vocab_richness_ttr=ttr,
@@ -328,17 +355,28 @@ class StyleAnalyzer:
             avg_word_length=avg_word_length,
             punctuation_density=punctuation_density,
             function_word_ratio=function_word_ratio,
-            sentence_length_variance=sentence_length_variance
+            sentence_length_variance=sentence_length_variance,
+            distinct_1=distinct_1,
+            distinct_2=distinct_2,
+            distinct_3=distinct_3
         )
     
     def compare_texts(self, text1: str, text2: str) -> SimilarityMetrics:
         """Compare stylistic similarity between two texts"""
-        # Semantic similarity using embeddings
-        embeddings1 = self.embedding_model.encode([text1])
-        embeddings2 = self.embedding_model.encode([text2])
+        if text1 in self.embedding_cache:
+            embeddings1 = self.embedding_cache[text1]
+        else:
+            embeddings1 = self.embedding_model.encode([text1])
+            self.embedding_cache[text1] = embeddings1
+
+        if text2 in self.embedding_cache:
+            embeddings2 = self.embedding_cache[text2]
+        else:
+            embeddings2 = self.embedding_model.encode([text2])
+            self.embedding_cache[text2] = embeddings2
+        
         semantic_sim = cosine_similarity(embeddings1, embeddings2)[0][0]
         
-        # Lexical similarity (Jaccard index)
         doc1 = self.nlp(text1)
         doc2 = self.nlp(text2)
         
@@ -354,7 +392,6 @@ class StyleAnalyzer:
             union = len(words1.union(words2))
             lexical_sim = intersection / union if union > 0 else 0
         
-        # Syntactic similarity (POS tag distribution)
         pos1 = [token.pos_ for token in doc1 if token.is_alpha]
         pos2 = [token.pos_ for token in doc2 if token.is_alpha]
         
@@ -366,13 +403,11 @@ class StyleAnalyzer:
             pos_vector1 = np.array([pos_counts1.get(pos, 0) for pos in all_pos])
             pos_vector2 = np.array([pos_counts2.get(pos, 0) for pos in all_pos])
             
-            # Normalize
             if pos_vector1.sum() > 0:
                 pos_vector1 = pos_vector1 / pos_vector1.sum()
             if pos_vector2.sum() > 0:
                 pos_vector2 = pos_vector2 / pos_vector2.sum()
             
-            # Cosine similarity
             if np.linalg.norm(pos_vector1) > 0 and np.linalg.norm(pos_vector2) > 0:
                 syntactic_sim = np.dot(pos_vector1, pos_vector2) / (np.linalg.norm(pos_vector1) * np.linalg.norm(pos_vector2))
             else:
@@ -380,11 +415,9 @@ class StyleAnalyzer:
         else:
             syntactic_sim = 0.0
         
-        # Style similarity (compare stylometric features)
         style1 = self.analyze_text(text1)
         style2 = self.analyze_text(text2)
         
-        # Create feature vectors
         features1 = np.array([
             style1.avg_sentence_length,
             style1.vocab_richness_ttr,
@@ -403,16 +436,14 @@ class StyleAnalyzer:
             style2.function_word_ratio
         ])
         
-        # Normalize features to [0, 1] range for comparison
         combined = np.vstack([features1, features2])
         if np.max(combined) > np.min(combined):
             combined_norm = (combined - np.min(combined)) / (np.max(combined) - np.min(combined))
             features1_norm = combined_norm[0]
             features2_norm = combined_norm[1]
             
-            # Calculate similarity (1 - euclidean distance normalized)
             distance = np.linalg.norm(features1_norm - features2_norm)
-            max_distance = np.sqrt(len(features1_norm))  # Maximum possible distance
+            max_distance = np.sqrt(len(features1_norm))
             style_sim = max(0, 1 - distance / max_distance)
         else:
             style_sim = 1.0
@@ -431,7 +462,32 @@ class Benchmarker:
     def __init__(self, model: MaskedDiffusionLM, tokenizer, device: str = 'auto'):
         self.generator = TextGenerator(model, tokenizer, device)
         self.analyzer = StyleAnalyzer()
+        # --- MODIFIED: Add note about caching heavy models ---
+        # For production/cluster use, set the TRANSFORMERS_CACHE environment variable
+        # to a shared directory to avoid repeated downloads.
+        self.bertscore = evaluate.load("bertscore")
+        # --- END MODIFIED ---
     
+    def bertscore_benchmark(self, generated_texts: List[str], reference_texts: List[str]) -> Dict[str, float]:
+        """
+        Calculates BERTScore between generated and reference texts.
+        """
+        if not generated_texts or not reference_texts:
+            return {'bert_score_precision': 0.0, 'bert_score_recall': 0.0, 'bert_score_f1': 0.0}
+
+        results = self.bertscore.compute(
+            predictions=generated_texts,
+            references=reference_texts,
+            lang="en",
+            model_type="distilbert-base-uncased"
+        )
+        
+        return {
+            "bert_score_precision": np.mean(results['precision']),
+            "bert_score_recall": np.mean(results['recall']),
+            "bert_score_f1": np.mean(results['f1']),
+        }
+
     def perplexity_benchmark(self, test_texts: List[str]) -> Dict[str, float]:
         """Calculate perplexity on test texts"""
         self.generator.model.eval()
@@ -440,25 +496,25 @@ class Benchmarker:
         
         with torch.no_grad():
             for text in test_texts:
-                # Tokenize
                 token_ids = self.generator.tokenizer.encode(text)
                 if len(token_ids) < 2:
                     continue
                 
-                # Create input (all masked) and labels (original)
-                input_ids = torch.tensor([[self.generator.tokenizer.token_mapping.get('[MASK]', 1)] * len(token_ids)], 
+                # --- MODIFIED: Ensure MASK token ID is correctly sourced ---
+                mask_token_id = self.generator.tokenizer.token_mapping.get('[MASK]', 1)
+                input_ids = torch.tensor([[mask_token_id] * len(token_ids)], 
                                        device=self.generator.device)
+                # --- END MODIFIED ---
                 labels = torch.tensor([token_ids], device=self.generator.device)
                 
-                # Forward pass
                 outputs = self.generator.model(input_ids=input_ids, labels=labels)
                 loss = outputs['loss']
                 
                 total_loss += loss.item() * len(token_ids)
                 total_tokens += len(token_ids)
         
-        avg_loss = total_loss / max(total_tokens, 1)
-        perplexity = math.exp(avg_loss)
+        avg_loss = total_loss / max(total_tokens, 1) if total_tokens > 0 else 0
+        perplexity = math.exp(avg_loss) if avg_loss > 0 else float('inf')
         
         return {
             'perplexity': perplexity,
@@ -469,7 +525,6 @@ class Benchmarker:
     
     def style_fidelity_benchmark(self, reference_text: str, num_samples: int = 10) -> Dict[str, Any]:
         """Benchmark style fidelity against reference text"""
-        # Extract sample prompts from reference
         sentences = nltk.sent_tokenize(reference_text)
         prompts = []
         
@@ -477,7 +532,6 @@ class Benchmarker:
             sentence = sentences[i]
             words = sentence.split()
             if len(words) > 5:
-                # Use first 3-5 words as prompt
                 prompt_length = random.randint(3, min(5, len(words) - 1))
                 prompt = ' '.join(words[:prompt_length])
                 prompts.append(prompt)
@@ -485,7 +539,6 @@ class Benchmarker:
         if not prompts:
             return {'error': 'Could not extract prompts from reference text'}
         
-        # Generate samples
         results = []
         similarities = []
         
@@ -493,11 +546,9 @@ class Benchmarker:
             result = self.generator.generate(prompt, GenerationConfig(max_new_tokens=50))
             results.append(result)
             
-            # Compare with reference
             similarity = self.analyzer.compare_texts(result.generated_text, reference_text)
             similarities.append(similarity)
         
-        # Aggregate metrics
         if similarities:
             avg_semantic = np.mean([s.semantic_similarity for s in similarities])
             avg_lexical = np.mean([s.lexical_similarity for s in similarities])
@@ -506,7 +557,6 @@ class Benchmarker:
         else:
             avg_semantic = avg_lexical = avg_syntactic = avg_style = 0.0
         
-        # Style consistency across generations
         generated_texts = [r.generated_text for r in results]
         style_metrics = [r.style_metrics for r in results]
         
@@ -530,7 +580,7 @@ class Benchmarker:
             'avg_syntactic_similarity': avg_syntactic,
             'avg_style_similarity': avg_style,
             'style_consistency': style_consistency,
-            'sample_results': results[:3]  # Include first 3 for inspection
+            'sample_results': results[:3]
         }
     
     def generation_diversity_benchmark(self, prompts: List[str], samples_per_prompt: int = 5) -> Dict[str, Any]:
@@ -538,21 +588,18 @@ class Benchmarker:
         all_diversities = []
         
         for prompt in prompts:
-            # Generate multiple samples
             results = self.generator.generate_multiple(prompt, samples_per_prompt)
             generated_texts = [r.generated_text for r in results]
             
             if len(generated_texts) < 2:
                 continue
             
-            # Calculate pairwise similarities
             similarities = []
             for i in range(len(generated_texts)):
                 for j in range(i + 1, len(generated_texts)):
                     sim = self.analyzer.compare_texts(generated_texts[i], generated_texts[j])
                     similarities.append(sim.semantic_similarity)
             
-            # Diversity = 1 - average similarity
             avg_similarity = np.mean(similarities) if similarities else 0
             diversity = 1 - avg_similarity
             all_diversities.append(diversity)
@@ -585,9 +632,7 @@ class EvaluationSuite:
         
         results = {}
         
-        # 1. Basic generation test
         print("1. Testing basic generation...")
-        # --- MODIFICATION: Use thematic prompts from the report ---
         test_prompts = [
             "Victor felt",
             "The monster",
@@ -596,13 +641,12 @@ class EvaluationSuite:
             "I created death"
         ]
         
-        # --- MODIFICATION: Use optimal generation parameters from the report ---
         optimal_gen_config = GenerationConfig(
-            max_new_tokens=80,          # Optimal range 60-100
-            num_diffusion_steps=50,     # Optimal is 50+
-            temperature=0.6,            # Optimal range 0.6-0.7
-            top_k=25,                   # Optimal range 20-25
-            top_p=0.85,                 # Keep as is, good value
+            max_new_tokens=80,
+            num_diffusion_steps=50,
+            temperature=0.6,
+            top_k=25,
+            top_p=0.85,
             do_sample=True
         )
         
@@ -617,25 +661,21 @@ class EvaluationSuite:
             'avg_generation_time': np.mean([r.generation_time for r in generation_results])
         }
         
-        # 2. Perplexity on validation data
         print("2. Calculating perplexity...")
         if hasattr(self.data_pipeline, 'segments') and self.data_pipeline.segments:
-            test_texts = [seg.text for seg in self.data_pipeline.segments[-50:]]  # Last 50 segments
+            test_texts = [seg.text for seg in self.data_pipeline.segments[-50:]]
             perplexity_results = self.benchmarker.perplexity_benchmark(test_texts)
             results['perplexity'] = perplexity_results
         
-        # 3. Style fidelity (if reference provided)
         if reference_text:
             print("3. Analyzing style fidelity...")
             style_results = self.benchmarker.style_fidelity_benchmark(reference_text, num_samples=5)
             results['style_fidelity'] = style_results
         
-        # 4. Generation diversity
         print("4. Measuring generation diversity...")
         diversity_results = self.benchmarker.generation_diversity_benchmark(test_prompts[:2], samples_per_prompt=3)
         results['diversity'] = diversity_results
         
-        # 5. Style analysis of generations
         print("5. Analyzing generated text style...")
         all_generated = ' '.join([r.generated_text for r in generation_results])
         if reference_text:
@@ -698,7 +738,6 @@ class EvaluationSuite:
 if __name__ == "__main__":
     print("Testing evaluation components...")
     
-    # Test style analyzer
     analyzer = StyleAnalyzer()
     
     test_text1 = "The origin of species is a complex process. Natural selection drives evolution through many generations."

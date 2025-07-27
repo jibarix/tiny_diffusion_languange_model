@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import asyncio
+import argparse # MODIFICATION: Added for command-line arguments
 from pathlib import Path
 from typing import Dict, Any, Generator
 
@@ -149,15 +150,27 @@ class WebDiffusionGenerator:
         }
 
 
-def load_models():
-    """Load model and tokenizer"""
+def load_models(debug_mode: bool = False):
+    """Load model and tokenizer based on debug mode."""
     global model, tokenizer, device
     
-    checkpoint_path = "outputs/checkpoints/best_stage3.pt"
-    tokenizer_path = "data/processed/compressed_tokenizer.json"
-    
+    # --- REVISION: Dynamic paths based on the debug_mode flag ---
+    if debug_mode:
+        print("--- RUNNING IN DEBUG MODE ---")
+        checkpoint_path = "outputs/debug/checkpoints/best_stage3.pt"
+        tokenizer_path = "data/processed/debug/compressed_tokenizer.json"
+    else:
+        print("--- RUNNING IN PRODUCTION MODE ---")
+        checkpoint_path = "outputs/checkpoints/best_stage3.pt"
+        tokenizer_path = "data/processed/compressed_tokenizer.json"
+    # --- END REVISION ---
+
     if not os.path.exists(checkpoint_path):
         print(f"❌ Model checkpoint not found: {checkpoint_path}")
+        if debug_mode:
+            print("💡 Run 'python scripts/train.py --book <path_to_text> --debug' to create it.")
+        else:
+            print("💡 Run 'python scripts/train.py --book <path_to_text>' to create it.")
         return False
     
     if not os.path.exists(tokenizer_path):
@@ -877,9 +890,10 @@ HTML_TEMPLATE = '''
 '''
 
 
-def run_app():
+def run_app(debug_mode: bool = False):
     """Run the Flask application"""
-    if not load_models():
+    # --- REVISION: Pass debug_mode to model loader ---
+    if not load_models(debug_mode=debug_mode):
         print("❌ Failed to load models. Please check your model and tokenizer paths.")
         return
     
@@ -908,4 +922,9 @@ def run_app():
 
 
 if __name__ == '__main__':
-    run_app()
+    # --- REVISION: Added argument parsing for the --debug flag ---
+    parser = argparse.ArgumentParser(description='Run the Diffusion Web Interface.')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode, loading the debug model and tokenizer.')
+    args = parser.parse_args()
+    
+    run_app(debug_mode=args.debug)
